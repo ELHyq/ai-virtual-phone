@@ -129,6 +129,7 @@
   overflow: hidden;
   padding: 12px;
   isolation: isolate;
+  overscroll-behavior: none;
 }
 
 .phone-shell::before {
@@ -971,6 +972,7 @@
 .phone-workspace.app-open {
   margin-top: 0;
   flex: 1 1 auto;
+  overscroll-behavior-x: none;
 }
 
 .phone-workspace.app-open .phone-app-pane {

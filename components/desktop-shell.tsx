@@ -154,6 +154,10 @@ const DOCK_PAGE_KEY = "dock" as const;
 type DragPageKey = DesktopPageKey | typeof DOCK_PAGE_KEY;
 const SWIPE_THRESHOLD_RATIO = 0.2;
 const SWIPE_MIN_THRESHOLD = 60;
+const APP_BACK_EDGE_WIDTH = 32;
+const APP_BACK_MIN_DISTANCE = 56;
+const APP_BACK_MAX_VERTICAL_DRIFT = 72;
+const PHONE_HISTORY_GUARD_KEY = "__floatPhoneHistoryGuard";
 
 function parseColorAlpha(value: string): { hex: string; alpha: number } {
   const rgbaMatch = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
@@ -1113,6 +1117,146 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
   useEffect(() => {
     activeAppRef.current = activeApp;
   }, [activeApp]);
+
+  /**
+   * 统一的“小手机返回”：优先复用当前页面已经存在的返回按钮，这样设置、聊天等
+   * App 仍由它们自己的页面栈决定返回到哪里；找不到时才退回桌面。
+   */
+  const requestPhoneBack = useCallback(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+
+    const backEvent = new CustomEvent("ai-phone-back", { cancelable: true });
+    if (!window.dispatchEvent(backEvent)) return;
+
+    const isUsable = (element: Element): element is HTMLButtonElement => {
+      if (!(element instanceof HTMLButtonElement) || element.disabled) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && style.pointerEvents !== "none"
+        && rect.width > 0
+        && rect.height > 0;
+    };
+
+    const modal = Array.from(shell.querySelectorAll<HTMLElement>('[data-ui="modal"]'))
+      .filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && window.getComputedStyle(element).display !== "none";
+      })
+      .at(-1);
+    const appPane = Array.from(shell.querySelectorAll<HTMLElement>(".phone-app-pane"))
+      .filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && window.getComputedStyle(element).display !== "none";
+      })
+      .at(-1);
+    const searchRoot = modal ?? appPane ?? shell;
+    const candidates = Array.from(searchRoot.querySelectorAll<HTMLButtonElement>([
+      'button[aria-label="返回"]',
+      'button[aria-label^="返回"]',
+      'button[aria-label="关闭"]',
+      'button[title^="返回"]',
+      "button.modal-header-btn-muted",
+      "button.page-back-btn",
+    ].join(","))).filter(isUsable);
+
+    if (candidates.length > 0) {
+      const rootRect = searchRoot.getBoundingClientRect();
+      candidates.sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        const aScore = Math.max(0, ar.top - rootRect.top) * 2 + Math.max(0, ar.left - rootRect.left);
+        const bScore = Math.max(0, br.top - rootRect.top) * 2 + Math.max(0, br.left - rootRect.left);
+        return aScore - bScore;
+      });
+      candidates[0].click();
+      return;
+    }
+
+    if (activeAppRef.current) setActiveApp(null);
+  }, []);
+
+  // Netlify Private 登录页会留在当前页面的上一条浏览历史里。放一个同 URL 的
+  // 哨兵条目接住浏览器/触控板的系统返回，再转交给小手机内部返回。
+  useEffect(() => {
+    const currentState = history.state && typeof history.state === "object" ? history.state : {};
+    if (!currentState[PHONE_HISTORY_GUARD_KEY]) {
+      history.pushState({ ...currentState, [PHONE_HISTORY_GUARD_KEY]: true }, "", location.href);
+    }
+
+    const onPopState = () => {
+      requestPhoneBack();
+      window.setTimeout(() => {
+        const state = history.state && typeof history.state === "object" ? history.state : {};
+        if (!state[PHONE_HISTORY_GUARD_KEY]) {
+          history.pushState({ ...state, [PHONE_HISTORY_GUARD_KEY]: true }, "", location.href);
+        }
+      }, 0);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [requestPhoneBack]);
+
+  // iOS/Android 的边缘返回可能先于 React pointer 事件被浏览器接管，因此这里
+  // 必须使用 non-passive 原生 touchmove。只拦截从手机屏幕左边缘开始的右滑，
+  // 普通纵向滚动、轮播与桌面左右翻页保持原样。
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    let gesture: { startX: number; startY: number; lastX: number; lastY: number; tracking: boolean } | null = null;
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (!activeAppRef.current || event.touches.length !== 1) {
+        gesture = null;
+        return;
+      }
+      const touch = event.touches[0];
+      const rect = shell.getBoundingClientRect();
+      const target = event.target instanceof Element ? event.target : null;
+      const isTyping = !!target?.closest('input, textarea, select, [contenteditable="true"]');
+      gesture = {
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastX: touch.clientX,
+        lastY: touch.clientY,
+        tracking: !isTyping && touch.clientX - rect.left <= APP_BACK_EDGE_WIDTH,
+      };
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!gesture?.tracking || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      gesture.lastX = touch.clientX;
+      gesture.lastY = touch.clientY;
+      const dx = touch.clientX - gesture.startX;
+      const dy = touch.clientY - gesture.startY;
+      if (dx > 4 && Math.abs(dx) > Math.abs(dy) && event.cancelable) event.preventDefault();
+    };
+
+    const finishGesture = () => {
+      if (!gesture?.tracking) {
+        gesture = null;
+        return;
+      }
+      const dx = gesture.lastX - gesture.startX;
+      const dy = Math.abs(gesture.lastY - gesture.startY);
+      gesture = null;
+      if (dx >= APP_BACK_MIN_DISTANCE && dy <= APP_BACK_MAX_VERTICAL_DRIFT) requestPhoneBack();
+    };
+
+    shell.addEventListener("touchstart", onTouchStart, { passive: true });
+    shell.addEventListener("touchmove", onTouchMove, { passive: false });
+    shell.addEventListener("touchend", finishGesture);
+    shell.addEventListener("touchcancel", finishGesture);
+    return () => {
+      shell.removeEventListener("touchstart", onTouchStart);
+      shell.removeEventListener("touchmove", onTouchMove);
+      shell.removeEventListener("touchend", finishGesture);
+      shell.removeEventListener("touchcancel", finishGesture);
+    };
+  }, [requestPhoneBack]);
   // Listen for theme CSS updates from 小卷
   useEffect(() => {
     const onThemeUpdate = () => {
@@ -1160,6 +1304,13 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
     locked: "x" | "y" | null;
     pointerId: number | null;
   }>({ startX: 0, startY: 0, deltaX: 0, locked: null, pointerId: null });
+  const appBackPointerRef = useRef<{
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    pointerId: number;
+  } | null>(null);
   const swipeLayerRef = useRef<HTMLDivElement | null>(null);
 
   // ── Edit mode (long-press drag) ──
@@ -3679,7 +3830,23 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   }, []);
 
   const handleSwipeStart = useCallback((e: React.PointerEvent) => {
-    if (activeApp) return;
+    if (activeApp) {
+      // 触屏走上面的 non-passive touch 监听；这里补鼠标/触控板拖动，既方便
+      // 桌面端使用，也让同一套交互可以自动化回归测试。
+      const shellRect = shellRef.current?.getBoundingClientRect();
+      const target = e.target instanceof Element ? e.target : null;
+      const isTyping = !!target?.closest('input, textarea, select, [contenteditable="true"]');
+      if (e.pointerType !== "touch" && shellRect && !isTyping && e.clientX - shellRect.left <= APP_BACK_EDGE_WIDTH) {
+        appBackPointerRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          lastX: e.clientX,
+          lastY: e.clientY,
+          pointerId: e.pointerId,
+        };
+      }
+      return;
+    }
     if (editMode && editDragRef.current) return;
     // Track tap on empty for "exit edit" detection
     if (editMode) {
@@ -3736,6 +3903,19 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   ]);
 
   const handleSwipeMove = useCallback((e: React.PointerEvent) => {
+    const appBackPointer = appBackPointerRef.current;
+    if (appBackPointer?.pointerId === e.pointerId) {
+      appBackPointer.lastX = e.clientX;
+      appBackPointer.lastY = e.clientY;
+      const dx = e.clientX - appBackPointer.startX;
+      const dy = e.clientY - appBackPointer.startY;
+      if (dx > 4 && Math.abs(dx) > Math.abs(dy)) {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        e.preventDefault();
+      }
+      return;
+    }
+
     // ── Long-press cancellation ──
     const lp = longPressRef.current;
     if (lp && lp.pointerId === e.pointerId) {
@@ -3807,6 +3987,15 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   }, [editMode, getSwipePageWidth, pageCount, setSwipeDrag]);
 
   const handleSwipeEnd = useCallback((e: React.PointerEvent) => {
+    const appBackPointer = appBackPointerRef.current;
+    if (appBackPointer?.pointerId === e.pointerId) {
+      appBackPointerRef.current = null;
+      const dx = appBackPointer.lastX - appBackPointer.startX;
+      const dy = Math.abs(appBackPointer.lastY - appBackPointer.startY);
+      if (dx >= APP_BACK_MIN_DISTANCE && dy <= APP_BACK_MAX_VERTICAL_DRIFT) requestPhoneBack();
+      return;
+    }
+
     // Clear long-press
     cancelLongPress();
     // Pointer is up → never keep the transition suppressed, whatever branch we take.
@@ -3854,7 +4043,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     swipeLayerRef.current?.classList.remove("phone-swipe-dragging");
     setSwipeDrag(0);
     if (targetPageIndex !== page) setCurrentPageIndex(targetPageIndex);
-  }, [editMode, getSwipePageWidth, pageCount, setSwipeDrag]);
+  }, [editMode, getSwipePageWidth, pageCount, requestPhoneBack, setSwipeDrag]);
 
   const handleCloseXiaohongshu = useCallback((isBusy?: boolean) => {
     const shouldKeepMounted = isBusy ?? xiaohongshuBusy;
