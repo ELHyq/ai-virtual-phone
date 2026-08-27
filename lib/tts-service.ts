@@ -25,6 +25,7 @@ export function resolveVoiceConfig(characterId: string, appId?: ContentAppId): V
  * Supported providers:
  * - Minimax: REST API → hex-encoded mp3
  * - OpenAI: REST API → binary audio blob
+ * - FishAudio: same-origin server proxy → binary audio blob
  */
 export async function synthesizeSpeech(
     text: string,
@@ -41,6 +42,10 @@ export async function synthesizeSpeech(
 
     if (provider === "OpenAI") {
         return synthesizeOpenAI(text, voiceConfig);
+    }
+
+    if (provider === "FishAudio") {
+        return synthesizeFishAudio(text, voiceConfig);
     }
 
     return null;
@@ -172,6 +177,32 @@ async function synthesizeOpenAI(text: string, config: VoiceApiConfig): Promise<B
 
     const blob = await response.blob();
     return new Blob([await blob.arrayBuffer()], { type: "audio/mpeg" });
+}
+
+// ── Fish Audio TTS ───────────────────────────────────────
+
+async function synthesizeFishAudio(text: string, config: VoiceApiConfig): Promise<Blob | null> {
+    const referenceId = config.defaultVoice?.trim();
+    if (!referenceId) throw new Error("Fish Audio 音色 Reference ID 未配置");
+
+    const response = await fetchWithTimeout("/api/voice/fish-tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            text,
+            referenceId,
+            model: config.model || "s2.1-pro-free",
+        }),
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const message = typeof data.message === "string" ? data.message : "";
+        throw new Error(message || `Fish Audio 请求失败 (${response.status})`);
+    }
+
+    const blob = await response.blob();
+    return new Blob([await blob.arrayBuffer()], { type: blob.type || "audio/mpeg" });
 }
 
 // ── iOS audio playback that coexists with speech recognition ──────────

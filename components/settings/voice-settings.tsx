@@ -10,7 +10,7 @@ import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
 
-const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI"]);
+const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI", "FishAudio"]);
 const MINIMAX_BASE_URL_OPTIONS = [
     { id: "cn", label: "国内版", baseUrl: "https://api.minimaxi.com/v1" },
     { id: "global", label: "海外版", baseUrl: "https://api.minimax.io/v1" },
@@ -30,6 +30,14 @@ const VOICE_PROVIDER_OPTIONS = [
     { value: "OpenAI", label: "OpenAI TTS" },
     { value: "MinimaxCN", label: "Minimax 语音国内版" },
     { value: "MinimaxGlobal", label: "Minimax 语音海外版" },
+    { value: "FishAudio", label: "Fish Audio (鱼声)" },
+];
+
+const DEFAULT_FISH_MODELS = [
+    { id: "s2.1-pro-free", name: "s2.1-pro-free (免费开发版)" },
+    { id: "s2.1-pro", name: "s2.1-pro" },
+    { id: "s2-pro", name: "s2-pro" },
+    { id: "s1", name: "s1" },
 ];
 
 const DEFAULT_VOICE_CONFIGS: VoiceApiConfig[] = [
@@ -182,7 +190,9 @@ function uniqueOptions(options: VoiceOption[]): VoiceOption[] {
 }
 
 function defaultVoiceOptions(provider: string): VoiceOption[] {
-    return provider === "OpenAI" ? DEFAULT_OPENAI_VOICES : DEFAULT_MINIMAX_VOICES;
+    if (provider === "OpenAI") return DEFAULT_OPENAI_VOICES;
+    if (provider === "Minimax") return DEFAULT_MINIMAX_VOICES;
+    return [];
 }
 
 function voiceOptionsForConfig(config: VoiceApiConfig, fetchedVoices: Record<string, VoiceOption[]>): VoiceOption[] {
@@ -222,6 +232,7 @@ function makeCloneVoiceId(config: VoiceApiConfig): string {
 
 function providerSelectValue(config: VoiceApiConfig): string {
     if (config.provider === "OpenAI") return "OpenAI";
+    if (config.provider === "FishAudio") return "FishAudio";
     return config.baseUrl === GLOBAL_MINIMAX_BASE_URL ? "MinimaxGlobal" : "MinimaxCN";
 }
 
@@ -304,6 +315,21 @@ export function VoiceSettings() {
 
     const updateProvider = (id: string, providerOption: string) => {
         const current = configs.find(c => c.id === id);
+        if (providerOption === "FishAudio") {
+            updateConfig(id, {
+                provider: "FishAudio",
+                apiKey: "",
+                baseUrl: "",
+                model: "s2.1-pro-free",
+                sttModel: "",
+                defaultVoice: "",
+                enableSTT: false,
+                enableTTS: true,
+            });
+            setManualModelIds(prev => ({ ...prev, [id]: false }));
+            setManualVoiceIds(prev => ({ ...prev, [id]: true }));
+            return;
+        }
         if (providerOption === "OpenAI") {
             updateConfig(id, {
                 provider: "OpenAI",
@@ -668,15 +694,17 @@ export function VoiceSettings() {
                                             </select>
                                         </div>
 
-                                        <div className="flex flex-col gap-1">
-                                            <label className="menu-desc ml-1">API Key</label>
-                                            <Input
-                                                type="password"
-                                                value={config.apiKey}
-                                                onChange={(e) => updateConfig(config.id, { apiKey: e.target.value })}
-                                                placeholder="输入密钥..."
-                                            />
-                                        </div>
+                                        {config.provider !== "FishAudio" && (
+                                            <div className="flex flex-col gap-1">
+                                                <label className="menu-desc ml-1">API Key</label>
+                                                <Input
+                                                    type="password"
+                                                    value={config.apiKey}
+                                                    onChange={(e) => updateConfig(config.id, { apiKey: e.target.value })}
+                                                    placeholder="输入密钥..."
+                                                />
+                                            </div>
+                                        )}
                                         {config.provider === "OpenAI" && (
                                             <>
                                                 <div className="flex flex-col gap-1">
@@ -841,20 +869,43 @@ export function VoiceSettings() {
                                             </>
                                         )}
 
+                                        {config.provider === "FishAudio" && (
+                                            <>
+                                                <Alert variant="success">
+                                                    <Check size={14} />
+                                                    API Key 从 Netlify 的 FISH_AUDIO_API_KEY 读取，不会保存在手机网页中。
+                                                </Alert>
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="menu-desc ml-1">语音模型 (TTS Model)</label>
+                                                    <select
+                                                        value={config.model || "s2.1-pro-free"}
+                                                        onChange={(e) => updateConfig(config.id, { model: e.target.value })}
+                                                        className="ui-select"
+                                                    >
+                                                        {DEFAULT_FISH_MODELS.map(model => (
+                                                            <option key={model.id} value={model.id}>{model.name}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                            </>
+                                        )}
+
                                         <div className="flex flex-col gap-1">
-                                            <label className="menu-desc ml-1">默认音色 (Default Voice) 或 自定义 Voice ID</label>
+                                            <label className="menu-desc ml-1">
+                                                {config.provider === "FishAudio" ? "Fish Audio 音色 Reference ID" : "默认音色 (Default Voice) 或 自定义 Voice ID"}
+                                            </label>
                                             <div className="flex flex-col gap-2">
                                                 <div className="flex gap-2">
-                                                    {manualVoiceIds[config.id] ? (
+                                                    {manualVoiceIds[config.id] || config.provider === "FishAudio" ? (
                                                         <>
                                                             <Input
                                                                 type="text"
                                                                 value={config.defaultVoice}
                                                                 onChange={(e) => updateConfig(config.id, { defaultVoice: e.target.value })}
-                                                                placeholder={config.provider === "OpenAI" ? "alloy" : "male-qn-qingse 或克隆 Voice ID"}
+                                                                placeholder={config.provider === "OpenAI" ? "alloy" : config.provider === "FishAudio" ? "粘贴 Fish Audio Reference ID" : "male-qn-qingse 或克隆 Voice ID"}
                                                                 className="flex-1"
                                                             />
-                                                            <button
+                                                            {config.provider !== "FishAudio" && <button
                                                                 type="button"
                                                                 onClick={() => setManualVoiceIds(prev => ({ ...prev, [config.id]: false }))}
                                                                 className="ui-icon-btn"
@@ -862,7 +913,7 @@ export function VoiceSettings() {
                                                                 title="返回音色下拉选择"
                                                             >
                                                                 <List size={20} />
-                                                            </button>
+                                                            </button>}
                                                         </>
                                                     ) : (
                                                         (() => {
@@ -896,7 +947,7 @@ export function VoiceSettings() {
                                                     </button>
                                                 </div>
 
-                                                <div className="flex gap-2 mt-0.5">
+                                                {config.provider !== "FishAudio" && <div className="flex gap-2 mt-0.5">
                                                     <button
                                                         onClick={() => fetchVoices(config)}
                                                         disabled={isFetching[config.id]}
@@ -915,7 +966,13 @@ export function VoiceSettings() {
                                                             上传音频克隆音色
                                                         </button>
                                                     )}
-                                                </div>
+                                                </div>}
+
+                                                {config.provider === "FishAudio" && (
+                                                    <span className="menu-desc ml-1">
+                                                        在 Fish Audio 音色库或你的克隆音色页面复制 Reference ID，然后点右侧播放按钮试听。
+                                                    </span>
+                                                )}
 
                                                 {fetchError[config.id] && (
                                                     <Alert variant="danger">
