@@ -1,10 +1,11 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, ChevronDown, Filter, Database, ListFilter, Rss, type LucideIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
-import { Toggle } from "@/components/ui/form";
+import { Input, Toggle } from "@/components/ui/form";
+import { Alert } from "@/components/ui/feedback";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import type { MemoryEntry, MemoryConfig } from "@/lib/memory-types";
@@ -25,14 +26,23 @@ import { hydrateChatStorage } from "@/lib/chat-storage";
 import { loadNativeTimeline, type NativeTimelineEntry } from "@/lib/short-term-assembler";
 import { runSummarizationPipeline } from "@/lib/memory-summarizer";
 import { runCoreMemoryPipeline } from "@/lib/core-memory-builder";
-import { resolveAuxiliaryApiConfig, resolveUserIdentity } from "@/lib/settings-storage";
-import { generateEmbedding, resolveEmbeddingModel } from "@/lib/memory-embedding";
+import { resolveUserIdentity } from "@/lib/settings-storage";
+import { generateEmbedding } from "@/lib/memory-embedding";
 import { isMemoryActive, retrieveMemoriesForPrompt } from "@/lib/memory-service";
 import { BINDING_ACCENTS } from "@/lib/ui-accent-colors";
+import {
+    MEMORY_API_PROVIDERS,
+    resolveMemoryEmbeddingApiConfig,
+    resolveMemoryRerankApiConfig,
+    resolveMemorySummaryApiConfig,
+} from "@/lib/memory-api-config";
+import { rerankMemoryEntries } from "@/lib/memory-rerank";
+import { simpleLLMCall } from "@/lib/api-helpers";
 
 type MemoryView = "list" | "detail" | "settings";
 type MemoryTab = "short" | "shared" | "core" | "long";
 type MemoryBudgetKey = "shortTermTokenBudget" | "coreMemoryTokenBudget" | "longTermTokenBudget";
+type MemoryApiKind = "summary" | "embedding" | "rerank";
 
 const MEMORY_TOKEN_BUDGET_MAX = 100000;
 const MEMORY_TOKEN_BUDGET_MIN: Record<MemoryBudgetKey, number> = {
@@ -209,6 +219,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [recallQuery, setRecallQuery] = useState("");
     const [recallResults, setRecallResults] = useState<MemoryEntry[] | null>(null);
     const [recallLoading, setRecallLoading] = useState(false);
+    const [expandedMemoryApi, setExpandedMemoryApi] = useState<MemoryApiKind | null>("summary");
+    const [testingMemoryApi, setTestingMemoryApi] = useState<MemoryApiKind | null>(null);
+    const [memoryApiTestResult, setMemoryApiTestResult] = useState<Partial<Record<MemoryApiKind, { success: boolean; message: string }>>>({});
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -463,6 +476,83 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         }
     };
 
+    const memoryApiField = (kind: MemoryApiKind): "summaryApi" | "embeddingApi" | "rerankApi" => (
+        kind === "summary" ? "summaryApi" : kind === "embedding" ? "embeddingApi" : "rerankApi"
+    );
+
+    const updateMemoryApi = (
+        kind: MemoryApiKind,
+        updates: Partial<MemoryConfig["summaryApi"]>,
+    ) => {
+        const field = memoryApiField(kind);
+        const next: MemoryConfig = {
+            ...config,
+            [field]: { ...config[field], ...updates },
+        };
+        setConfig(next);
+        saveMemoryConfig(next);
+        setMemoryApiTestResult(previous => ({ ...previous, [kind]: undefined }));
+    };
+
+    const testMemoryApi = async (kind: MemoryApiKind) => {
+        if (testingMemoryApi) return;
+        setTestingMemoryApi(kind);
+        setMemoryApiTestResult(previous => ({ ...previous, [kind]: undefined }));
+        try {
+            if (kind === "summary") {
+                const apiConfig = resolveMemorySummaryApiConfig(config);
+                if (!apiConfig) throw new Error("请填写 Base URL 和模型，或启用“继承主 API”");
+                const result = await simpleLLMCall(
+                    apiConfig,
+                    [{ role: "user", content: "只回复：记忆接口正常" }],
+                    { temperature: 0, max_tokens: 128 },
+                );
+                if (result.error || !result.content?.trim()) throw new Error(result.error || "模型返回为空");
+                setMemoryApiTestResult(previous => ({
+                    ...previous,
+                    summary: { success: true, message: `连接成功：${result.content!.replace(/\s+/g, " ").slice(0, 60)}` },
+                }));
+                return;
+            }
+
+            if (kind === "embedding") {
+                const apiConfig = resolveMemoryEmbeddingApiConfig(config);
+                if (!apiConfig) throw new Error("请填写 Embedding Base URL 和模型");
+                const embedding = await generateEmbedding("测试记忆向量", apiConfig, {
+                    throwOnError: true,
+                    model: config.embeddingApi.model,
+                });
+                if (!embedding) throw new Error("接口没有返回向量");
+                setMemoryApiTestResult(previous => ({
+                    ...previous,
+                    embedding: { success: true, message: `连接成功，向量维度 ${embedding.length}` },
+                }));
+                return;
+            }
+
+            const apiConfig = resolveMemoryRerankApiConfig(config);
+            if (!apiConfig) throw new Error("请填写 Rerank Base URL 和模型");
+            const now = new Date().toISOString();
+            const sampleEntries: MemoryEntry[] = [
+                { id: "rerank-test-1", characterId: "test", sourceApp: "chat", type: "long_term", content: "用户喜欢喝咖啡", importance: 0.5, createdAt: now, updatedAt: now },
+                { id: "rerank-test-2", characterId: "test", sourceApp: "chat", type: "long_term", content: "今天下雨了", importance: 0.5, createdAt: now, updatedAt: now },
+            ];
+            const reranked = await rerankMemoryEntries("用户喜欢什么饮料？", sampleEntries, apiConfig, { throwOnError: true });
+            if (!reranked) throw new Error("接口未返回有效排序结果");
+            setMemoryApiTestResult(previous => ({
+                ...previous,
+                rerank: { success: true, message: "连接成功，已返回有效排序" },
+            }));
+        } catch (error) {
+            setMemoryApiTestResult(previous => ({
+                ...previous,
+                [kind]: { success: false, message: error instanceof Error ? error.message : String(error) },
+            }));
+        } finally {
+            setTestingMemoryApi(null);
+        }
+    };
+
     // ── Prompt editing ──
     const handleSavePrompt = () => {
         if (editingPrompt === null) return;
@@ -517,10 +607,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
 
     const maybeBuildManualMemoryEmbedding = async (type: MemoryEntry["type"], content: string): Promise<number[] | undefined> => {
         if (type !== "long_term" || !config.vectorRecallEnabled) return undefined;
-        const embeddingApiConfig = resolveAuxiliaryApiConfig("embeddingApiConfigId");
-        if (!embeddingApiConfig || !resolveEmbeddingModel(embeddingApiConfig)) return undefined;
+        const embeddingApiConfig = resolveMemoryEmbeddingApiConfig(config);
+        if (!embeddingApiConfig) return undefined;
         try {
-            return await generateEmbedding(content, embeddingApiConfig) ?? undefined;
+            return await generateEmbedding(content, embeddingApiConfig, { model: config.embeddingApi.model }) ?? undefined;
         } catch {
             return undefined;
         }
@@ -948,6 +1038,149 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         const isCoreModified = currentCorePrompt !== (config.coreMemoryPrompt ?? DEFAULT_CORE_MEMORY_PROMPT);
         const isCoreDefault = (config.coreMemoryPrompt ?? DEFAULT_CORE_MEMORY_PROMPT) === DEFAULT_CORE_MEMORY_PROMPT;
 
+        const renderMemoryApiCard = (
+            kind: MemoryApiKind,
+            title: string,
+            description: string,
+            Icon: LucideIcon,
+        ) => {
+            const field = memoryApiField(kind);
+            const connection = config[field];
+            const isExpanded = expandedMemoryApi === kind;
+            const inheritsMain = kind === "summary" && connection.mode === "inherit_main";
+            const featureEnabled = kind === "embedding"
+                ? config.vectorRecallEnabled !== false
+                : kind === "rerank"
+                    ? config.rerankEnabled !== false
+                    : true;
+            const configured = inheritsMain || Boolean(
+                connection.model.trim()
+                && (connection.provider !== "Custom" || connection.baseUrl.trim())
+            );
+            const status = !featureEnabled
+                ? "已关闭"
+                : inheritsMain
+                    ? "继承主 API"
+                    : configured
+                        ? "已配置"
+                        : "待配置";
+            const test = memoryApiTestResult[kind];
+
+            const setFeatureEnabled = (enabled: boolean) => {
+                const next = kind === "embedding"
+                    ? { ...config, vectorRecallEnabled: enabled }
+                    : { ...config, rerankEnabled: enabled };
+                setConfig(next);
+                saveMemoryConfig(next);
+            };
+
+            return (
+                <div className="memory-api-card" key={kind}>
+                    <button
+                        type="button"
+                        className="memory-api-card-header"
+                        onClick={() => setExpandedMemoryApi(isExpanded ? null : kind)}
+                        aria-expanded={isExpanded}
+                    >
+                        <MemorySettingsIcon icon={Icon} color={BINDING_ACCENTS.embedding} />
+                        <span className="menu-label-group min-w-0">
+                            <span className="menu-label">{title}</span>
+                            <span className="menu-desc">{description}</span>
+                        </span>
+                        <span className={`memory-api-status${configured && featureEnabled ? " is-ready" : ""}`}>{status}</span>
+                        <ChevronDown size={16} className={isExpanded ? "rotate-180" : ""} />
+                    </button>
+
+                    {isExpanded && (
+                        <div className="memory-api-card-body">
+                            {kind === "summary" ? (
+                                <div className="ui-toggle-row">
+                                    <div className="menu-label-group">
+                                        <span className="menu-label">继承主 API</span>
+                                        <span className="menu-desc">开启时直接使用系统设置中的全局文字模型</span>
+                                    </div>
+                                    <Toggle
+                                        checked={inheritsMain}
+                                        onChange={enabled => updateMemoryApi("summary", { mode: enabled ? "inherit_main" : "custom" })}
+                                    />
+                                </div>
+                            ) : (
+                                <div className="ui-toggle-row">
+                                    <div className="menu-label-group">
+                                        <span className="menu-label">启用{kind === "embedding" ? "向量召回" : "精排"}</span>
+                                        <span className="menu-desc">
+                                            {kind === "embedding" ? "关闭后仍保留关键词、标签和时近性召回" : "关闭或失败时保留 RRF 排序"}
+                                        </span>
+                                    </div>
+                                    <Toggle checked={featureEnabled} onChange={setFeatureEnabled} />
+                                </div>
+                            )}
+
+                            {!inheritsMain && (
+                                <>
+                                    <label className="memory-api-field">
+                                        <span>服务商</span>
+                                        <select
+                                            className="ui-select"
+                                            value={connection.provider}
+                                            onChange={event => updateMemoryApi(kind, { provider: event.target.value })}
+                                        >
+                                            {MEMORY_API_PROVIDERS.map(provider => (
+                                                <option key={provider} value={provider}>{provider === "Custom" ? "自定义 (Custom)" : provider}</option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                    <label className="memory-api-field">
+                                        <span>Base URL {connection.provider === "Custom" ? "（必填）" : "（可选）"}</span>
+                                        <Input
+                                            type="url"
+                                            value={connection.baseUrl}
+                                            onChange={event => updateMemoryApi(kind, { baseUrl: event.target.value })}
+                                            placeholder={kind === "rerank" ? "https://api.example.com/v1" : "https://api.example.com/v1"}
+                                        />
+                                    </label>
+                                    <label className="memory-api-field">
+                                        <span>API Key</span>
+                                        <Input
+                                            type="password"
+                                            value={connection.apiKey}
+                                            onChange={event => updateMemoryApi(kind, { apiKey: event.target.value })}
+                                            placeholder="输入密钥（仅保存在当前站点）"
+                                        />
+                                    </label>
+                                    <label className="memory-api-field">
+                                        <span>{kind === "embedding" ? "Embedding 模型" : kind === "rerank" ? "Rerank 模型" : "总结模型"}</span>
+                                        <Input
+                                            type="text"
+                                            value={connection.model}
+                                            onChange={event => updateMemoryApi(kind, { model: event.target.value })}
+                                            placeholder={kind === "embedding" ? "例如 BAAI/bge-m3" : kind === "rerank" ? "例如 BAAI/bge-reranker-v2-m3" : "例如 deepseek-chat"}
+                                        />
+                                    </label>
+                                </>
+                            )}
+
+                            <button
+                                type="button"
+                                className="ui-btn ui-btn-success w-full"
+                                disabled={testingMemoryApi !== null}
+                                onClick={() => void testMemoryApi(kind)}
+                            >
+                                <Rss size={15} className={testingMemoryApi === kind ? "animate-pulse" : ""} />
+                                {testingMemoryApi === kind ? "测试中..." : "测试连接"}
+                            </button>
+                            {test && (
+                                <Alert variant={test.success ? "success" : "danger"}>
+                                    <AlertCircle size={15} className="mt-[2px] shrink-0" />
+                                    <span className="break-all">{test.message}</span>
+                                </Alert>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         return (
             <div className="page-menu memory-settings-menu">
                 {/* Manual summarize */}
@@ -1077,6 +1310,13 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     </div>
                 ) : null}
 
+                <p className="menu-group-desc mx-2">记忆 API</p>
+                <div className="memory-api-list">
+                    {renderMemoryApiCard("summary", "记忆总结 API", "长期记忆、原子事实与核心记忆总结", Database)}
+                    {renderMemoryApiCard("embedding", "Embedding API", "把记忆与查询转换为语义向量", Search)}
+                    {renderMemoryApiCard("rerank", "Rerank API", "对混合召回候选进行最终精排", ListFilter)}
+                </div>
+
                 {/* Feature toggles */}
                 <p className="menu-group-desc mx-2">自动化</p>
                 <div className="menu-group">
@@ -1103,34 +1343,6 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         <div className="menu-right">
                             <Toggle checked={config.autoBuildCoreEnabled ?? true} onChange={(v) => {
                                 const next = { ...config, autoBuildCoreEnabled: v };
-                                setConfig(next);
-                                saveMemoryConfig(next);
-                            }} />
-                        </div>
-                    </div>
-                    <div className="menu-item">
-                        <MemorySettingsIcon icon={Search} color={BINDING_ACCENTS.embedding} />
-                        <div className="menu-label-group">
-                            <span className="menu-label">混合召回</span>
-                            <span className="menu-desc">每轮融合关键词、标签、时近性、重要性与 embedding</span>
-                        </div>
-                        <div className="menu-right">
-                            <Toggle checked={config.vectorRecallEnabled ?? true} onChange={(v) => {
-                                const next = { ...config, vectorRecallEnabled: v };
-                                setConfig(next);
-                                saveMemoryConfig(next);
-                            }} />
-                        </div>
-                    </div>
-                    <div className="menu-item">
-                        <MemorySettingsIcon icon={SlidersHorizontal} color={BINDING_ACCENTS.embedding} />
-                        <div className="menu-label-group">
-                            <span className="menu-label">Rerank 精排</span>
-                            <span className="menu-desc">使用辅助 API 精排候选记忆；未绑定或失败时保留混合召回顺序</span>
-                        </div>
-                        <div className="menu-right">
-                            <Toggle checked={config.rerankEnabled ?? true} onChange={(v) => {
-                                const next = { ...config, rerankEnabled: v };
                                 setConfig(next);
                                 saveMemoryConfig(next);
                             }} />

@@ -36,7 +36,7 @@ import {
     personalPushFetch,
 } from "./personal-push-cloud";
 import { isSelfHostedModeEnabled } from "./self-hosting";
-import { loadApiConfigs, resolveAuxiliaryApiConfig } from "./settings-storage";
+import { resolveMainApiConfig } from "./memory-api-config";
 import {
     bridgeConnection,
     getBridgeRuleRunsMap,
@@ -141,7 +141,7 @@ async function buildRuleSnapshot(rule: BridgeRule): Promise<Record<string, unkno
         // ai 加工模式：预挂一个轻量加工请求（提示词里的 {payload} 也换成哨兵）
         let processRequest: Record<string, unknown> | undefined;
         if (rule.process?.mode === "ai" && rule.process.prompt) {
-            const auxConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") ?? loadApiConfigs()[0];
+            const auxConfig = resolveMainApiConfig();
             if (auxConfig) {
                 const promptWithSentinel = rule.process.prompt
                     .replace(/\{payload\}/g, BRIDGE_EVENT_SENTINEL)

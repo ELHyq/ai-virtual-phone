@@ -237,11 +237,11 @@ export type BindingConfig = {
     /** App-level defaults shared by every character; character app overrides still win. */
     appDefaults?: Partial<Record<string, BindingSlot>>;
     characterBindings: CharacterBinding[];
-    /** Auxiliary API: used for memory summarization (global, not per-character) */
+    /** @deprecated Migrated into Memory settings. */
     memorySummaryApiConfigId?: string;
-    /** Auxiliary API: used for embedding/vector recall (global, not per-character) */
+    /** @deprecated Migrated into Memory settings. */
     embeddingApiConfigId?: string;
-    /** Auxiliary API: used to rerank memory-retrieval candidates (global, not per-character) */
+    /** @deprecated Migrated into Memory settings. */
     rerankApiConfigId?: string;
     /** Auxiliary API: used by the mascot assistant (global, not per-character) */
     mascotApiConfigId?: string;

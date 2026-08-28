@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback, useContext } from "react";
-import { Plus, RefreshCw, Rss, AlertCircle, FileEdit, Trash2, X, Check } from "lucide-react";
+import { Plus, RefreshCw, Rss, AlertCircle, FileEdit, Trash2, X, Check, Crown } from "lucide-react";
 import { SettingsContext } from "../phone-settings-app";
 import type { ApiConfig } from "@/lib/settings-types";
-import { loadApiConfigs, removeApiConfigReferences, saveApiConfigs } from "@/lib/settings-storage";
+import { loadApiConfigs, loadBindingConfig, removeApiConfigReferences, saveApiConfigs, saveBindingConfig } from "@/lib/settings-storage";
 import { generateEmbedding, isEmbeddingModelName } from "@/lib/memory-embedding";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
@@ -38,6 +38,7 @@ export function ApiSettings() {
     const [isNewConfig, setIsNewConfig] = useState(false);
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
+    const [mainApiId, setMainApiId] = useState<string | null>(null);
 
     // Testing and Fetching states
     const [isFetching, setIsFetching] = useState<Record<string, boolean>>({});
@@ -48,12 +49,24 @@ export function ApiSettings() {
     // Load from localStorage on mount
     useEffect(() => {
         const loaded = loadApiConfigs();
+        const available = loaded.length > 0 ? loaded : DEFAULT_CONFIGS;
         if (loaded.length > 0) {
-            setConfigs(loaded);
+            setConfigs(available);
         } else {
-            setConfigs(DEFAULT_CONFIGS);
+            setConfigs(available);
             saveApiConfigs(DEFAULT_CONFIGS);
         }
+        const binding = loadBindingConfig();
+        const selectedMainId = available.some(config => config.id === binding.globalDefaults.apiConfigId)
+            ? binding.globalDefaults.apiConfigId!
+            : available[0]?.id ?? null;
+        if (selectedMainId && selectedMainId !== binding.globalDefaults.apiConfigId) {
+            saveBindingConfig({
+                ...binding,
+                globalDefaults: { ...binding.globalDefaults, apiConfigId: selectedMainId },
+            });
+        }
+        setMainApiId(selectedMainId);
         setIsLoaded(true);
     }, []);
 
@@ -97,8 +110,18 @@ export function ApiSettings() {
     };
 
     const removeConfig = (id: string) => {
-        persist(configs.filter(c => c.id !== id));
+        const remaining = configs.filter(c => c.id !== id);
+        persist(remaining);
         removeApiConfigReferences(id);
+        if (mainApiId === id) {
+            const nextMainId = remaining[0]?.id ?? null;
+            const binding = loadBindingConfig();
+            saveBindingConfig({
+                ...binding,
+                globalDefaults: { ...binding.globalDefaults, apiConfigId: nextMainId ?? undefined },
+            });
+            setMainApiId(nextMainId);
+        }
         const newFetchedModels = { ...fetchedModels };
         delete newFetchedModels[id];
         setFetchedModels(newFetchedModels);
@@ -106,6 +129,19 @@ export function ApiSettings() {
         const newTestResults = { ...testResult };
         delete newTestResults[id];
         setTestResult(newTestResults);
+    };
+
+    const setAsMainApi = (id: string) => {
+        const binding = loadBindingConfig();
+        saveBindingConfig({
+            ...binding,
+            globalDefaults: { ...binding.globalDefaults, apiConfigId: id },
+        });
+        setMainApiId(id);
+        setTestResult(previous => ({
+            ...previous,
+            [id]: { success: true, message: "已设为全局主 API；普通文字生成默认使用此配置" },
+        }));
     };
 
     // Use unified determineBaseUrl from api-helpers
@@ -250,10 +286,26 @@ export function ApiSettings() {
                             }}
                         >
                             <div className="min-w-0 flex flex-col gap-1">
-                                <span className="truncate text-[calc(14.4px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">{config.name || config.provider}</span>
+                                <span className="flex min-w-0 items-center gap-1.5 text-[calc(14.4px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">
+                                    <span className="truncate">{config.name || config.provider}</span>
+                                    {mainApiId === config.id && <span className="api-main-badge"><Crown size={10} />主 API</span>}
+                                </span>
                                 <span className="menu-desc truncate">{config.defaultModel || config.provider || "未设置模型"}</span>
                             </div>
                             <div className="flex gap-2 shrink-0 items-center justify-end">
+                                {mainApiId !== config.id && (
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            setAsMainApi(config.id);
+                                        }}
+                                        className="ui-link-btn"
+                                        aria-label={`将 ${config.name || config.provider} 设为主 API`}
+                                    >
+                                        <Crown size={18} />
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     onClick={(event) => {

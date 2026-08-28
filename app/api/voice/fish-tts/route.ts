@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     const apiKey = process.env.FISH_AUDIO_API_KEY?.trim() || "";
     if (!apiKey) {
         return NextResponse.json(
-            { error: "missing_fish_audio_api_key", message: "Netlify 尚未配置 FISH_AUDIO_API_KEY。" },
+            { error: "missing_fish_audio_api_key", message: "当前部署环境尚未配置 FISH_AUDIO_API_KEY。" },
             { status: 503 },
         );
     }

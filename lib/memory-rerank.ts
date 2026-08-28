@@ -19,13 +19,19 @@ export async function rerankMemoryEntries(
     query: string,
     candidates: MemoryEntry[],
     apiConfig: ApiConfig,
+    options: { throwOnError?: boolean } = {},
 ): Promise<MemoryEntry[] | null> {
+    const fail = (message: string): null => {
+        if (options.throwOnError) throw new Error(message);
+        console.warn("[MemoryRerank]", message);
+        return null;
+    };
     if (candidates.length === 0) return [];
     const model = apiConfig.defaultModel?.trim();
-    if (!model) return null;
+    if (!model) return fail("缺少 Rerank 模型");
 
     const baseUrl = determineBaseUrl(apiConfig).replace(/\/$/, "");
-    if (!baseUrl) return null;
+    if (!baseUrl) return fail("缺少 Rerank Base URL");
     const url = baseUrl.endsWith("/rerank") ? baseUrl : `${baseUrl}/rerank`;
 
     try {
@@ -45,8 +51,7 @@ export async function rerankMemoryEntries(
             }),
         });
         if (!response.ok) {
-            console.warn(`[MemoryRerank] API error ${response.status}: ${await response.text()}`);
-            return null;
+            return fail(`API 错误 ${response.status}: ${await response.text()}`);
         }
 
         const payload = await response.json();
@@ -55,7 +60,7 @@ export async function rerankMemoryEntries(
             : Array.isArray(payload?.data)
                 ? payload.data
                 : [];
-        if (rows.length === 0) return null;
+        if (rows.length === 0) return fail("接口返回结果缺少排序列表");
 
         const ranked: MemoryEntry[] = [];
         const seen = new Set<number>();
@@ -65,7 +70,7 @@ export async function rerankMemoryEntries(
             ranked.push(candidates[index]);
             seen.add(index);
         }
-        if (ranked.length === 0) return null;
+        if (ranked.length === 0) return fail("接口没有返回有效候选索引");
 
         // Some providers return fewer rows than requested; keep the remaining
         // candidates in their original RRF order instead of dropping memory.
@@ -74,6 +79,7 @@ export async function rerankMemoryEntries(
         });
         return ranked;
     } catch (error) {
+        if (options.throwOnError) throw error;
         console.warn("[MemoryRerank] fetch error:", error);
         return null;
     }

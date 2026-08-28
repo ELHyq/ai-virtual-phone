@@ -2,6 +2,16 @@
 
 import type { ContentAppId } from "./settings-types";
 
+export type MemoryApiMode = "inherit_main" | "custom";
+
+export type MemoryApiConnection = {
+    mode: MemoryApiMode;
+    provider: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+};
+
 export type MemoryEntry = {
     id: string;
     characterId: string;
@@ -21,6 +31,9 @@ export type MemoryConfig = {
     autoBuildCoreEnabled: boolean;          // whether core memories rebuild after long-term summarization
     vectorRecallEnabled: boolean;           // whether vector embedding recall is used for memory retrieval
     rerankEnabled: boolean;                 // whether a configured rerank API refines fused retrieval candidates
+    summaryApi: MemoryApiConnection;        // long-term/core memory summarization model
+    embeddingApi: MemoryApiConnection;      // direct embedding endpoint configured inside Memory
+    rerankApi: MemoryApiConnection;         // direct rerank endpoint configured inside Memory
     recallTopK: number;                     // maximum long-term memories injected per request
     maxLongTermEntries: number;
     summarizationEventInterval: number;     // trigger summarization every N events
@@ -118,6 +131,27 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     autoBuildCoreEnabled: true,
     vectorRecallEnabled: true,
     rerankEnabled: true,
+    summaryApi: {
+        mode: "inherit_main",
+        provider: "Custom",
+        baseUrl: "",
+        apiKey: "",
+        model: "",
+    },
+    embeddingApi: {
+        mode: "custom",
+        provider: "Custom",
+        baseUrl: "",
+        apiKey: "",
+        model: "",
+    },
+    rerankApi: {
+        mode: "custom",
+        provider: "Custom",
+        baseUrl: "",
+        apiKey: "",
+        model: "",
+    },
     recallTopK: 10,
     maxLongTermEntries: 500,
     summarizationEventInterval: 80,

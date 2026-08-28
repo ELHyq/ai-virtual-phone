@@ -278,10 +278,28 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
                             audioAbortRef.current = abort;
                             await promise;
                             audioAbortRef.current = null;
+                        } else {
+                            throw new Error("语音服务没有返回音频");
                         }
                     } catch (e) {
                         console.warn("[GroupCall] TTS failed:", e);
+                        const message = e instanceof Error ? e.message : String(e);
+                        setSubtitles(prev => [...prev, {
+                            id: `tts-err-${r.characterId}-${Date.now()}`,
+                            role: "assistant",
+                            text: `⚠️ ${r.characterName} 的语音未播放：${message}`,
+                            senderName: r.characterName,
+                            senderCharacterId: r.characterId,
+                        }]);
                     }
+                } else if (!voiceConfig && speechText.trim()) {
+                    setSubtitles(prev => [...prev, {
+                        id: `tts-missing-${r.characterId}-${Date.now()}`,
+                        role: "assistant",
+                        text: `⚠️ ${r.characterName} 的语音未播放：请在设置 → 语音 API 中选择主语音。`,
+                        senderName: r.characterName,
+                        senderCharacterId: r.characterId,
+                    }]);
                 }
                 setSpeakingCharId(null);
             }

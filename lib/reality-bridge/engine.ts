@@ -1,7 +1,8 @@
 "use client";
 
 import { simpleLLMCall } from "../api-helpers";
-import { loadApiConfigs, resolveAuxiliaryApiConfig, resolveUserIdentity } from "../settings-storage";
+import { resolveUserIdentity } from "../settings-storage";
+import { resolveMainApiConfig } from "../memory-api-config";
 import { loadCharacters } from "../character-storage";
 import { MacroEngine } from "../macro-engine";
 import {
@@ -68,7 +69,7 @@ async function processText(rule: BridgeRule, item: BridgeItem): Promise<string> 
     return fillTemplate(rule.process.template, item).slice(0, 4000);
   }
   if (mode === "ai" && rule.process.prompt) {
-    const config = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") ?? loadApiConfigs()[0];
+    const config = resolveMainApiConfig();
     if (config) {
       const prompt = fillTemplate(rule.process.prompt, item);
       const result = await simpleLLMCall(config, [

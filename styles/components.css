@@ -4964,6 +4964,101 @@
   line-height: 1.2;
 }
 
+.memory-api-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-api-card {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--c-border) 72%, transparent);
+  border-radius: 18px;
+  background: var(--c-surface, rgba(255, 255, 255, 0.76));
+  box-shadow: 0 8px 24px rgba(20, 30, 45, 0.05);
+}
+
+.memory-api-card-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.memory-api-card-header > .menu-label-group {
+  flex: 1;
+}
+
+.memory-api-card-header > svg {
+  flex: 0 0 auto;
+  transition: transform 160ms ease;
+}
+
+.memory-api-status {
+  flex: 0 0 auto;
+  max-width: 92px;
+  overflow: hidden;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-text-muted) 10%, transparent);
+  color: var(--c-text-muted);
+  font-size: calc(9px*var(--app-text-scale,1));
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-api-status.is-ready {
+  background: color-mix(in srgb, #18a957 12%, transparent);
+  color: #138044;
+}
+
+.memory-api-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 14px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--c-border) 58%, transparent);
+}
+
+.memory-api-card-body > .ui-toggle-row {
+  margin: 0 -2px;
+  padding: 13px 2px 2px;
+  border: 0;
+  background: transparent;
+}
+
+.memory-api-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.memory-api-field > span {
+  padding-left: 3px;
+  color: var(--c-text-muted);
+  font-size: calc(10px*var(--app-text-scale,1));
+}
+
+.api-main-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #f3a712 16%, transparent);
+  color: #9a6200;
+  font-size: calc(8px*var(--app-text-scale,1));
+  font-weight: 700;
+  line-height: 1;
+}
+
 .mem-entry-menu-wrap {
   position: relative;
 }

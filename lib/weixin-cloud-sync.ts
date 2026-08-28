@@ -173,6 +173,15 @@ export type WeixinCloudPromptContext = {
   nativeToolHistory: boolean;
 };
 
+function redactMemoryApiSecrets(config: MemoryConfig): MemoryConfig {
+  return {
+    ...config,
+    summaryApi: { ...config.summaryApi, apiKey: "" },
+    embeddingApi: { ...config.embeddingApi, apiKey: "" },
+    rerankApi: { ...config.rerankApi, apiKey: "" },
+  };
+}
+
 export type WeixinCloudImageGenerationContext = {
   enabled: boolean;
   requestMode: "direct" | "server";
@@ -648,7 +657,7 @@ export async function buildWeixinCloudRuntimeSnapshot(
     worldBooks,
     regexes,
     userIdentity: resolveUserIdentity(character.id, "chat"),
-    memoryConfig,
+    memoryConfig: redactMemoryApiSecrets(memoryConfig),
     memories,
     chatAppSettings,
     promptContext,

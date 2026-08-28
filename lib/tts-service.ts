@@ -5,6 +5,12 @@ import { loadVoiceConfigs, loadBindingConfig, resolveBinding } from "./settings-
 
 export type VoiceApiConfigResolved = VoiceApiConfig;
 
+function isReadyTtsConfig(config: VoiceApiConfig): boolean {
+    if (!config.enableTTS || !config.defaultVoice?.trim()) return false;
+    if (config.provider === "FishAudio") return true;
+    return Boolean(config.apiKey?.trim());
+}
+
 /**
  * Resolve the TTS voice config for a character via the binding cascade.
  * Returns null if no voice config is bound or found.
@@ -12,10 +18,21 @@ export type VoiceApiConfigResolved = VoiceApiConfig;
 export function resolveVoiceConfig(characterId: string, appId?: ContentAppId): VoiceApiConfig | null {
     const bindings = loadBindingConfig();
     const slot = resolveBinding(bindings, characterId, appId ?? "chat");
-    if (!slot.voiceConfigId) return null;
-
     const configs = loadVoiceConfigs();
-    return configs.find(c => c.id === slot.voiceConfigId) || null;
+    const resolved = slot.voiceConfigId
+        ? configs.find(c => c.id === slot.voiceConfigId && c.enableTTS)
+        : null;
+    if (resolved) return resolved;
+
+    // 角色没有单独绑定时，语音设置里的主语音（全局语音）直接生效。
+    // 兼容旧数据：若主语音已删除或未设置，使用第一个启用 TTS 的方案，
+    // 避免“配置已经存在，但通话静默跳过语音”的无反馈状态。
+    const globalId = bindings.globalDefaults.voiceConfigId;
+    if (globalId) {
+        const globalConfig = configs.find(c => c.id === globalId && c.enableTTS);
+        if (globalConfig) return globalConfig;
+    }
+    return configs.find(isReadyTtsConfig) || configs.find(c => c.enableTTS) || null;
 }
 
 /**

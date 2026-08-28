@@ -5,6 +5,8 @@ import type { MemoryEntry, MemoryConfig } from "./memory-types";
 import { DEFAULT_MEMORY_CONFIG } from "./memory-types";
 import { kvGet, kvSet, registerKvMigration, registerDynamicPrefix } from "./kv-db";
 import { openIndexedDbAtLeast } from "./idb-open";
+import { loadApiConfigs, loadBindingConfig, saveBindingConfig } from "./settings-storage";
+import { memoryConnectionFromApiConfig } from "./memory-api-config";
 
 // ── Long-term memory DB (unchanged from v1) ──
 
@@ -179,9 +181,14 @@ export function loadMemoryConfig(): MemoryConfig {
     if (typeof window === "undefined") return { ...DEFAULT_MEMORY_CONFIG };
     try {
         const raw = kvGet(CONFIG_KEY);
-        if (!raw) return { ...DEFAULT_MEMORY_CONFIG };
-        const parsed = JSON.parse(raw) as Partial<MemoryConfig>;
-        const merged = { ...DEFAULT_MEMORY_CONFIG, ...parsed };
+        const parsed = raw ? JSON.parse(raw) as Partial<MemoryConfig> : {};
+        const merged: MemoryConfig = {
+            ...DEFAULT_MEMORY_CONFIG,
+            ...parsed,
+            summaryApi: { ...DEFAULT_MEMORY_CONFIG.summaryApi, ...(parsed.summaryApi ?? {}) },
+            embeddingApi: { ...DEFAULT_MEMORY_CONFIG.embeddingApi, ...(parsed.embeddingApi ?? {}) },
+            rerankApi: { ...DEFAULT_MEMORY_CONFIG.rerankApi, ...(parsed.rerankApi ?? {}) },
+        };
         // Migrate the former effectively-unbounded defaults without overriding
         // users who already customized any budget or the new recall cap.
         if (
@@ -194,6 +201,39 @@ export function loadMemoryConfig(): MemoryConfig {
             merged.coreMemoryTokenBudget = DEFAULT_MEMORY_CONFIG.coreMemoryTokenBudget;
             merged.longTermTokenBudget = DEFAULT_MEMORY_CONFIG.longTermTokenBudget;
         }
+        const binding = loadBindingConfig();
+        const apiConfigs = loadApiConfigs();
+        let migrated = false;
+        if (!parsed.summaryApi && binding.memorySummaryApiConfigId) {
+            const legacy = apiConfigs.find(item => item.id === binding.memorySummaryApiConfigId);
+            if (legacy) {
+                merged.summaryApi = memoryConnectionFromApiConfig(legacy);
+                migrated = true;
+            }
+        }
+        if (!parsed.embeddingApi && binding.embeddingApiConfigId) {
+            const legacy = apiConfigs.find(item => item.id === binding.embeddingApiConfigId);
+            if (legacy) {
+                merged.embeddingApi = memoryConnectionFromApiConfig(legacy);
+                migrated = true;
+            }
+        }
+        if (!parsed.rerankApi && binding.rerankApiConfigId) {
+            const legacy = apiConfigs.find(item => item.id === binding.rerankApiConfigId);
+            if (legacy) {
+                merged.rerankApi = memoryConnectionFromApiConfig(legacy);
+                migrated = true;
+            }
+        }
+        if (binding.memorySummaryApiConfigId || binding.embeddingApiConfigId || binding.rerankApiConfigId) {
+            const nextBinding = { ...binding };
+            delete nextBinding.memorySummaryApiConfigId;
+            delete nextBinding.embeddingApiConfigId;
+            delete nextBinding.rerankApiConfigId;
+            saveBindingConfig(nextBinding, false);
+            migrated = true;
+        }
+        if (migrated) kvSet(CONFIG_KEY, JSON.stringify(merged));
         return merged;
     } catch {
         return { ...DEFAULT_MEMORY_CONFIG };

@@ -12,11 +12,11 @@ import {
   loadPresets,
   loadRegexes,
   loadWorldBooks,
-  resolveAuxiliaryApiConfig,
   resolveBinding,
   resolveUserIdentity,
 } from "./settings-storage";
 import { simpleLLMCall } from "./api-helpers";
+import { resolveMemorySummaryApiConfig } from "./memory-api-config";
 import type { ApiConfig, PresetConfig, RegexConfig, WorldBookConfig } from "./settings-types";
 import { buildCalendarScheduleMarker } from "./calendar-storage";
 import { getWeekStartIso } from "./calendar-utils";
@@ -934,9 +934,9 @@ export async function generateCoCreateSessionMemory(
   session: CoCreateSession,
   options?: { sinceTimestamp?: string },
 ): Promise<CoCreateSessionMemoryResult | null> {
-  const apiConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId");
+  const apiConfig = resolveMemorySummaryApiConfig(loadMemoryConfig());
   if (!apiConfig) {
-    throw new ChatEngineError("未配置记忆总结 API（设置 → 绑定管理 → 辅助 API 绑定）。");
+    throw new ChatEngineError("未配置记忆总结 API（设置 → 记忆库 → 记忆设置）。");
   }
 
   const since = options?.sinceTimestamp;

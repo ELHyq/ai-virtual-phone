@@ -7,12 +7,12 @@ import {
   loadWorldBooks,
   resolveBinding,
   resolveUserIdentity,
-  resolveAuxiliaryApiConfig,
 } from "./settings-storage";
 import type { ApiConfig, PresetConfig, RegexConfig, WorldBookConfig } from "./settings-types";
 import { assemblePromptPayload, type LLMMessage } from "./llm-prompt-assembler";
 import { previewMessagesForApi, sendLLMRequest, ChatEngineError } from "./chat-engine";
 import { loadMemoryConfig } from "./memory-storage";
+import { resolveMemorySummaryApiConfig } from "./memory-api-config";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { prepareShortTermContext } from "./short-term-assembler";
@@ -214,9 +214,9 @@ export async function summarizeVnChapter(
   characterId: string,
   messages: VnMessage[]
 ): Promise<string> {
-  const apiConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId");
+  const apiConfig = resolveMemorySummaryApiConfig(loadMemoryConfig());
   if (!apiConfig) {
-    throw new ChatEngineError("未配置记忆总结 API（请在绑定配置 → 辅助API绑定中设置）");
+    throw new ChatEngineError("未配置记忆总结 API（请在记忆设置 → 记忆 API 中填写）");
   }
 
   const character = loadCharacters().find((c) => c.id === characterId);

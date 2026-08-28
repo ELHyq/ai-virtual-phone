@@ -4,14 +4,11 @@ import { useState, useEffect, useContext, type CSSProperties } from "react";
 import {
     Asterisk,
     BookOpen,
-    Box,
-    Brain,
     Check,
     ChevronRight,
     Code2,
     Languages,
     Layers,
-    ListFilter,
     Mic,
     RotateCcw,
     User,
@@ -68,7 +65,7 @@ type Level = "global" | "character" | "app";
 type SingleBindingField = "apiConfigId" | "voiceConfigId" | "presetId" | "userIdentityId";
 type MultiBindingField = "worldBookIds" | "regexIds";
 type BindingField = SingleBindingField | MultiBindingField;
-type AuxBindingField = "memorySummaryApiConfigId" | "embeddingApiConfigId" | "rerankApiConfigId" | "mascotApiConfigId" | "reasoningTranslateApiConfigId" | "qaApiConfigId";
+type AuxBindingField = "mascotApiConfigId" | "reasoningTranslateApiConfigId" | "qaApiConfigId";
 
 const BINDING_FIELD_VISUALS: Record<BindingField, { icon: LucideIcon; color: string }> = {
     apiConfigId: { icon: Code2, color: BINDING_ACCENTS.api },
@@ -80,9 +77,6 @@ const BINDING_FIELD_VISUALS: Record<BindingField, { icon: LucideIcon; color: str
 };
 
 const AUX_FIELD_VISUALS: Record<AuxBindingField, { icon: LucideIcon; color: string }> = {
-    memorySummaryApiConfigId: { icon: Brain, color: BINDING_ACCENTS.memory },
-    embeddingApiConfigId: { icon: Box, color: BINDING_ACCENTS.embedding },
-    rerankApiConfigId: { icon: ListFilter, color: BINDING_ACCENTS.embedding },
     mascotApiConfigId: { icon: Code2, color: BINDING_ACCENTS.api },
     reasoningTranslateApiConfigId: { icon: Languages, color: BINDING_ACCENTS.voice },
     qaApiConfigId: { icon: Wrench, color: BINDING_ACCENTS.api },
@@ -227,18 +221,6 @@ export function BindingManager() {
                 return { ...b, defaults, appOverrides: newOverrides };
             });
             const next: BindingConfig = { ...prev, globalDefaults: gd, appDefaults: newAppDefaults, characterBindings: newBindings };
-            if (prev.memorySummaryApiConfigId && !validSets.api.has(prev.memorySummaryApiConfigId)) {
-                next.memorySummaryApiConfigId = undefined;
-                dirty = true;
-            }
-            if (prev.embeddingApiConfigId && !validSets.api.has(prev.embeddingApiConfigId)) {
-                next.embeddingApiConfigId = undefined;
-                dirty = true;
-            }
-            if (prev.rerankApiConfigId && !validSets.api.has(prev.rerankApiConfigId)) {
-                next.rerankApiConfigId = undefined;
-                dirty = true;
-            }
             if (prev.mascotApiConfigId && !validSets.api.has(prev.mascotApiConfigId)) {
                 next.mascotApiConfigId = undefined;
                 dirty = true;
@@ -450,9 +432,6 @@ export function BindingManager() {
 
     const getAuxFieldDescription = (field: AuxBindingField): string => {
         switch (field) {
-            case "memorySummaryApiConfigId": return "用于聊天记忆压缩";
-            case "embeddingApiConfigId": return "用于语义向量召回";
-            case "rerankApiConfigId": return "使用所选配置的默认模型精排；失败时自动回退";
             case "mascotApiConfigId": return "用于小卷对话与工具调用";
             case "reasoningTranslateApiConfigId": return "用于翻译思考过程（思维链）内容";
             case "qaApiConfigId": return "用于工坊答疑、诊断与内容开发";
@@ -461,9 +440,6 @@ export function BindingManager() {
 
     const getAuxFieldLabel = (field: AuxBindingField): string => {
         switch (field) {
-            case "memorySummaryApiConfigId": return "记忆总结 API";
-            case "embeddingApiConfigId": return "向量召回 API";
-            case "rerankApiConfigId": return "Rerank 精排 API";
             case "mascotApiConfigId": return "小卷助手 API";
             case "reasoningTranslateApiConfigId": return "思维链翻译 API";
             case "qaApiConfigId": return "工坊 API";
@@ -546,8 +522,7 @@ export function BindingManager() {
         const currentValue = config[field];
         const options = apiConfigs.map(c => ({ id: c.id, name: c.name || c.provider }));
         const selectedOption = options.find(o => o.id === currentValue);
-        const emptyValue = field === "rerankApiConfigId" ? "未绑定（不启用）" : "继承全局";
-        const displayValue = selectedOption ? selectedOption.name : emptyValue;
+        const displayValue = selectedOption ? selectedOption.name : "继承全局";
 
         return (
             <div key={field} className="binding-aux-select">
@@ -889,9 +864,7 @@ export function BindingManager() {
                                 }}
                             >
                                 <span className="binding-sheet-check">{!selectedValue && <Check size={15} />}</span>
-                                <span className="binding-sheet-option-text">
-                                    {field === "rerankApiConfigId" ? "未绑定（不启用）" : "继承全局"}
-                                </span>
+                                <span className="binding-sheet-option-text">继承全局</span>
                             </button>
                             {options.length === 0 ? (
                                 <div className="binding-sheet-empty">暂无可选 API 配置，请先在 API 设置页面创建。</div>
@@ -993,9 +966,6 @@ export function BindingManager() {
                     <section className="flex flex-col gap-3">
                         <p className="settings-menu-section-title">Auxiliary API</p>
                         <div className="flex flex-col gap-3">
-                            {renderAuxSelect("memorySummaryApiConfigId", "记忆总结 API")}
-                            {renderAuxSelect("embeddingApiConfigId", "向量召回 API")}
-                            {renderAuxSelect("rerankApiConfigId", "Rerank 精排 API")}
                             {renderAuxSelect("mascotApiConfigId", "小卷助手 API")}
                             {renderAuxSelect("qaApiConfigId", "工坊 API")}
                             {renderAuxSelect("reasoningTranslateApiConfigId", "思维链翻译 API")}

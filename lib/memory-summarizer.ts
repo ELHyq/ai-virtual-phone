@@ -15,9 +15,9 @@ import {
     setLastSummarizedTimestamp,
     incrementCoreMemoryCounter,
 } from "./memory-storage";
-import { resolveAuxiliaryApiConfig } from "./settings-storage";
+import { resolveMemoryEmbeddingApiConfig, resolveMemorySummaryApiConfig } from "./memory-api-config";
 import { loadNativeTimeline, formatTimelineForSummarization, filterTimelineByAllowedSources } from "./short-term-assembler";
-import { generateEmbedding, generateEmbeddings, resolveEmbeddingModel, cosineSimilarity, keywordOverlapRatio } from "./memory-embedding";
+import { generateEmbedding, generateEmbeddings, cosineSimilarity, keywordOverlapRatio } from "./memory-embedding";
 import { simpleLLMCall } from "./api-helpers";
 import { maybeRunCoreMemoryPipeline } from "./core-memory-builder";
 import { jsonrepair } from "jsonrepair";
@@ -93,7 +93,7 @@ function isDuplicateMemory(
 /**
  * Check if summarization should run based on event counter, then execute.
  * Trigger: counter >= summarizationEventInterval.
- * API config is resolved from auxiliary binding (global, not per-character).
+ * API config is resolved from Memory settings (summary may inherit the main text API).
  */
 export async function maybeRunSummarization(
     characterId: string,
@@ -131,10 +131,9 @@ export async function runSummarizationPipeline(
 ): Promise<{ success: boolean; error?: string; stored?: number; skipped?: number }> {
     const config = loadMemoryConfig();
 
-    // Resolve API from auxiliary binding
-    const apiConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId");
+    const apiConfig = resolveMemorySummaryApiConfig(config);
     if (!apiConfig) {
-        return { success: false, error: "未配置记忆总结 API（请在绑定配置 → 辅助API绑定中设置）" };
+        return { success: false, error: "未配置记忆总结 API（请在记忆设置 → 记忆 API 中填写）" };
     }
 
     // Read native app data (chat messages, moments) directly — no separate event log
@@ -201,15 +200,17 @@ export async function runSummarizationPipeline(
 
     // Generate candidate embeddings in one batch when configured.
     let candidateEmbeddings: Array<number[] | undefined> = candidates.map(() => undefined);
-    const embeddingApiConfig = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
-    if (embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)) {
+    const embeddingApiConfig = config.vectorRecallEnabled ? resolveMemoryEmbeddingApiConfig(config) : null;
+    if (embeddingApiConfig) {
         try {
-            const embeddings = await generateEmbeddings(candidates.map(candidate => candidate.content), embeddingApiConfig);
+            const embeddings = await generateEmbeddings(candidates.map(candidate => candidate.content), embeddingApiConfig, {
+                model: config.embeddingApi.model,
+            });
             if (embeddings) {
                 candidateEmbeddings = embeddings;
             } else {
                 candidateEmbeddings = await Promise.all(candidates.map(async candidate =>
-                    await generateEmbedding(candidate.content, embeddingApiConfig) ?? undefined
+                    await generateEmbedding(candidate.content, embeddingApiConfig, { model: config.embeddingApi.model }) ?? undefined
                 ));
             }
         } catch { /* ignore */ }

@@ -9,7 +9,7 @@ import {
     getLastCoreSummarizedTimestamp,
     setLastCoreSummarizedTimestamp,
 } from "./memory-storage";
-import { resolveAuxiliaryApiConfig } from "./settings-storage";
+import { resolveMemorySummaryApiConfig } from "./memory-api-config";
 import { simpleLLMCall } from "./api-helpers";
 import { isMemoryActive } from "./memory-service";
 
@@ -48,9 +48,9 @@ export async function runCoreMemoryPipeline(
         return { success: false, error: "没有可用于总结核心记忆的长期记忆" };
     }
 
-    const apiConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId");
+    const apiConfig = resolveMemorySummaryApiConfig(config);
     if (!apiConfig) {
-        return { success: false, error: "未配置记忆总结 API（请在绑定配置 → 辅助API绑定中设置）" };
+        return { success: false, error: "未配置记忆总结 API（请在记忆设置 → 记忆 API 中填写）" };
     }
 
     const afterTimestamp = options?.force ? undefined : (getLastCoreSummarizedTimestamp(characterId) ?? undefined);

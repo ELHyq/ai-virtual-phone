@@ -11,7 +11,9 @@ import {
 } from "@/lib/map-storage";
 import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
-import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
+import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity } from "@/lib/settings-storage";
+import { loadMemoryConfig } from "@/lib/memory-storage";
+import { resolveMemorySummaryApiConfig } from "@/lib/memory-api-config";
 import { expandEvent, companionDeclare, resolveRound, rollD100, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
 import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
 import MapRenderer from "./map-renderer";
@@ -837,7 +839,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           setEndingData(ending);
           setEndingStep(0);
           // Final summary on game completion — use auxiliary API
-          const endSummaryApi = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") || apiConfig;
+          const endSummaryApi = resolveMemorySummaryApiConfig(loadMemoryConfig()) || apiConfig;
           generateAdventureSummary(newSave, skeleton.world.name, endSummaryApi).catch(() => undefined);
         } catch (e) {
           pushMessages({ id: mkId(), type: "system", text: `结局生成失败：${e instanceof Error ? e.message : String(e)}` });
@@ -894,7 +896,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Auto-summary check (fire-and-forget)
       const latestSave = saveRef.current;
       if (shouldAutoSummarize(latestSave)) {
-        const summaryApi = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") || loadApiConfigs().find(c => c.apiKey);
+        const summaryApi = resolveMemorySummaryApiConfig(loadMemoryConfig()) || loadApiConfigs().find(c => c.apiKey);
         if (summaryApi?.apiKey) {
           generateAdventureSummary(latestSave, skeleton.world.name, summaryApi).catch(() => undefined);
         }
@@ -1305,7 +1307,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
   // ── Archive adventure ──
   const handleArchive = useCallback(() => {
-    const summaryApi = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") || loadApiConfigs().find(c => c.apiKey);
+    const summaryApi = resolveMemorySummaryApiConfig(loadMemoryConfig()) || loadApiConfigs().find(c => c.apiKey);
     if (summaryApi?.apiKey) {
       generateAdventureSummary(save, skeleton.world.name, summaryApi).catch(() => undefined);
     }
@@ -2498,7 +2500,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 {/* Manual summary button (for this world) */}
                 <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 14, marginBottom: 8, fontFamily: "monospace", letterSpacing: "0.1em" }}>冒险总结</div>
                 <button onClick={async () => {
-                  const apiConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") || loadApiConfigs().find(c => c.apiKey);
+                  const apiConfig = resolveMemorySummaryApiConfig(loadMemoryConfig()) || loadApiConfigs().find(c => c.apiKey);
                   if (!apiConfig?.apiKey) return;
                   pushMessages({ id: mkId(), type: "system", text: "正在总结冒险经历..." });
                   try {

@@ -3,8 +3,8 @@
 
 import type { MemoryConfig, MemoryEntry } from "./memory-types";
 import { loadMemoryEntriesByType } from "./memory-storage";
-import { loadBindingConfig, resolveAuxiliaryApiConfig } from "./settings-storage";
-import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity, keywordSearch } from "./memory-embedding";
+import { resolveMemoryEmbeddingApiConfig, resolveMemoryRerankApiConfig } from "./memory-api-config";
+import { generateEmbedding, cosineSimilarity, keywordSearch } from "./memory-embedding";
 import { estimateTokens } from "./token-counter";
 import { rerankMemoryEntries } from "./memory-rerank";
 
@@ -12,7 +12,7 @@ import { rerankMemoryEntries } from "./memory-rerank";
  * Retrieve relevant long-term memories for prompt injection.
  * Strategy: always rank active memories, then cap by both top-K and token budget.
  * Keyword, vector, entity/tag, recency and importance signals are fused with RRF.
- * Embedding API is resolved from auxiliary binding (global, not per-character).
+ * Embedding and rerank APIs are resolved directly from Memory settings.
  */
 export async function retrieveMemoriesForPrompt(
     characterId: string,
@@ -33,9 +33,11 @@ export async function retrieveMemoriesForPrompt(
     const entityRank = rankByMetadataMatch(currentContext, longTermEntries);
     if (entityRank.length > 0) rankedLists.push({ entries: entityRank, weight: 0.8 });
 
-    const embeddingApiConfig = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
-    if (embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)) {
-        const queryEmbedding = await generateEmbedding(currentContext, embeddingApiConfig);
+    const embeddingApiConfig = config.vectorRecallEnabled ? resolveMemoryEmbeddingApiConfig(config) : null;
+    if (embeddingApiConfig) {
+        const queryEmbedding = await generateEmbedding(currentContext, embeddingApiConfig, {
+            model: config.embeddingApi.model,
+        });
         if (queryEmbedding) {
             const withEmbeddings = longTermEntries.filter(m => m.embedding && m.embedding.length > 0);
             if (withEmbeddings.length > 0) {
@@ -56,9 +58,8 @@ export async function retrieveMemoriesForPrompt(
 
     const fused = fuseRankings(rankedLists, longTermEntries);
     let ranked = fused;
-    const rerankBindingId = loadBindingConfig().rerankApiConfigId;
-    const rerankApiConfig = config.rerankEnabled !== false && rerankBindingId
-        ? resolveAuxiliaryApiConfig("rerankApiConfigId")
+    const rerankApiConfig = config.rerankEnabled !== false
+        ? resolveMemoryRerankApiConfig(config)
         : null;
     if (rerankApiConfig) {
         const candidatePoolSize = Math.min(fused.length, Math.max(topK * 4, 20));

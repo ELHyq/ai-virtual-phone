@@ -38,7 +38,7 @@ export function resolveEmbeddingModel(apiConfig: Pick<ApiConfig, "provider" | "d
 export async function generateEmbedding(
     text: string,
     apiConfig: ApiConfig,
-    options: { throwOnError?: boolean } = {}
+    options: { throwOnError?: boolean; model?: string } = {}
 ): Promise<number[] | null> {
     const embeddings = await requestEmbeddings(text, 1, apiConfig, options);
     return embeddings?.[0] ?? null;
@@ -48,7 +48,7 @@ export async function generateEmbedding(
 export async function generateEmbeddings(
     texts: string[],
     apiConfig: ApiConfig,
-    options: { throwOnError?: boolean } = {}
+    options: { throwOnError?: boolean; model?: string } = {}
 ): Promise<number[][] | null> {
     return requestEmbeddings(texts, texts.length, apiConfig, options);
 }
@@ -57,7 +57,7 @@ async function requestEmbeddings(
     input: string | string[],
     expectedCount: number,
     apiConfig: ApiConfig,
-    options: { throwOnError?: boolean },
+    options: { throwOnError?: boolean; model?: string },
 ): Promise<number[][] | null> {
     const fail = (message: string): null => {
         if (options.throwOnError) throw new Error(message);
@@ -66,7 +66,7 @@ async function requestEmbeddings(
     };
 
     if (expectedCount === 0) return [];
-    const embeddingModel = resolveEmbeddingModel(apiConfig);
+    const embeddingModel = options.model?.trim() || resolveEmbeddingModel(apiConfig);
     if (!embeddingModel) return fail("该配置无可用向量模型（默认模型名不像向量模型，服务商也无内置映射）");
     if (!apiConfig.apiKey) return fail("缺少 API Key");
 

@@ -43,6 +43,7 @@ import { formatIsoDate, getWeekStartIso, normalizeTime } from "./calendar-utils"
 import { simpleLLMCall } from "./api-helpers";
 import { generateEmbedding } from "./memory-embedding";
 import { loadMemoryConfig, loadMemoryEntriesByType, saveMemoryEntry } from "./memory-storage";
+import { resolveMemoryEmbeddingApiConfig } from "./memory-api-config";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import type { MemoryEntry } from "./memory-types";
@@ -1342,7 +1343,7 @@ export async function runCustomAppAiEmbed(app: InstalledCustomApp, record: Recor
   if (!text) throw new Error("ai.embed 需要 text。");
   const config = cleanText(record.apiConfigId ?? record.configId, 160)
     ? resolveCustomAppApiConfig(app, record)
-    : resolveAuxiliaryApiConfig("embeddingApiConfigId") ?? resolveCustomAppApiConfig(app, record);
+    : resolveMemoryEmbeddingApiConfig(loadMemoryConfig()) ?? resolveCustomAppApiConfig(app, record);
   if (!config) throw new Error("未找到可用 embedding API 配置。");
   const embedding = await generateEmbedding(text, config);
   if (!embedding) throw new Error("当前 API 配置不支持 embedding 或请求失败。");

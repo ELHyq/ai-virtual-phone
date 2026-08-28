@@ -419,8 +419,24 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
                         audioAbortRef.current = abort;
                         await promise;
                         audioAbortRef.current = null;
+                    } else if (!audioBlob) {
+                        throw new Error("语音服务没有返回音频");
                     }
-                } catch (e) { console.warn("[VideoCall] TTS failed:", e); }
+                } catch (e) {
+                    console.warn("[VideoCall] TTS failed:", e);
+                    const message = e instanceof Error ? e.message : String(e);
+                    setSubtitles(prev => [...prev, {
+                        id: `tts-err-${Date.now()}`,
+                        role: "assistant",
+                        text: `⚠️ 语音未播放：${message}`,
+                    }]);
+                }
+            } else if (!voiceConfig && !isSpeakerMutedRef.current) {
+                setSubtitles(prev => [...prev, {
+                    id: `tts-missing-${Date.now()}`,
+                    role: "assistant",
+                    text: "⚠️ 语音未播放：请先在设置 → 语音 API 中启用并选择主语音。",
+                }]);
             }
 
             if (stateRef.current !== "ENDED") setCallState("IDLE");

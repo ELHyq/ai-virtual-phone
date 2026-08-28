@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useContext } from "react";
-import { Plus, Play, Pause, AlertCircle, RefreshCw, FileEdit, Trash2, X, Check, Upload, List } from "lucide-react";
+import { Plus, Play, Pause, AlertCircle, RefreshCw, FileEdit, Trash2, X, Check, Upload, List, Crown } from "lucide-react";
 import { SettingsContext } from "../phone-settings-app";
 import type { VoiceApiConfig } from "@/lib/settings-types";
-import { loadVoiceConfigs, saveVoiceConfigs } from "@/lib/settings-storage";
+import { loadVoiceConfigs, saveVoiceConfigs, loadBindingConfig, saveBindingConfig } from "@/lib/settings-storage";
 import { synthesizeSpeech } from "@/lib/tts-service";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
@@ -236,6 +236,12 @@ function providerSelectValue(config: VoiceApiConfig): string {
     return config.baseUrl === GLOBAL_MINIMAX_BASE_URL ? "MinimaxGlobal" : "MinimaxCN";
 }
 
+function isReadyTtsConfig(config: VoiceApiConfig): boolean {
+    if (!config.enableTTS || !config.defaultVoice?.trim()) return false;
+    if (config.provider === "FishAudio") return true;
+    return Boolean(config.apiKey?.trim());
+}
+
 export function VoiceSettings() {
     const { setSubpageRightAction } = useContext(SettingsContext);
     const [configs, setConfigs] = useState<VoiceApiConfig[]>([]);
@@ -251,6 +257,7 @@ export function VoiceSettings() {
     const [manualModelIds, setManualModelIds] = useState<Record<string, boolean>>({});
     const [manualVoiceIds, setManualVoiceIds] = useState<Record<string, boolean>>({});
     const [isLoaded, setIsLoaded] = useState(false);
+    const [mainVoiceConfigId, setMainVoiceConfigId] = useState<string | null>(null);
     const audioRef = useRef<HTMLAudioElement | null>(null);
 
     // Fetching states for Voices
@@ -262,12 +269,26 @@ export function VoiceSettings() {
     useEffect(() => {
         const stored = loadVoiceConfigs();
         const loaded = normalizeVoiceConfigs(stored);
+        const available = loaded.length > 0 ? loaded : DEFAULT_VOICE_CONFIGS;
         if (loaded.length > 0) {
-            setConfigs(loaded);
+            setConfigs(available);
             if (loaded.length !== stored.length) saveVoiceConfigs(loaded);
         } else {
-            setConfigs(DEFAULT_VOICE_CONFIGS);
-            saveVoiceConfigs(DEFAULT_VOICE_CONFIGS);
+            setConfigs(available);
+            saveVoiceConfigs(available);
+        }
+
+        const binding = loadBindingConfig();
+        const boundId = binding.globalDefaults.voiceConfigId;
+        const selectedMainId = available.some(config => config.id === boundId && config.enableTTS)
+            ? boundId!
+            : available.find(isReadyTtsConfig)?.id ?? available.find(config => config.enableTTS)?.id ?? null;
+        setMainVoiceConfigId(selectedMainId);
+        if (selectedMainId && selectedMainId !== boundId) {
+            saveBindingConfig({
+                ...binding,
+                globalDefaults: { ...binding.globalDefaults, voiceConfigId: selectedMainId },
+            });
         }
         setIsLoaded(true);
     }, []);
@@ -356,7 +377,17 @@ export function VoiceSettings() {
     };
 
     const removeConfig = (id: string) => {
-        persist(configs.filter(c => c.id !== id));
+        const remaining = configs.filter(c => c.id !== id);
+        persist(remaining);
+        if (mainVoiceConfigId === id) {
+            const nextMainId = remaining.find(isReadyTtsConfig)?.id ?? remaining.find(config => config.enableTTS)?.id ?? null;
+            const binding = loadBindingConfig();
+            saveBindingConfig({
+                ...binding,
+                globalDefaults: { ...binding.globalDefaults, voiceConfigId: nextMainId ?? undefined },
+            });
+            setMainVoiceConfigId(nextMainId);
+        }
 
         // Cleanup states
         const newFetchedVoices = { ...fetchedVoices };
@@ -377,6 +408,15 @@ export function VoiceSettings() {
             delete next[id];
             return next;
         });
+    };
+
+    const setMainVoiceConfig = (id: string) => {
+        const binding = loadBindingConfig();
+        saveBindingConfig({
+            ...binding,
+            globalDefaults: { ...binding.globalDefaults, voiceConfigId: id },
+        });
+        setMainVoiceConfigId(id);
     };
 
     const openCloneModal = (config: VoiceApiConfig) => {
@@ -626,10 +666,27 @@ export function VoiceSettings() {
                             }}
                         >
                             <div className="min-w-0 flex flex-col gap-1">
-                                <span className="truncate text-[calc(14.4px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">{config.name || config.provider}</span>
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                    <span className="truncate text-[calc(14.4px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">{config.name || config.provider}</span>
+                                    {mainVoiceConfigId === config.id && <span className="api-main-badge"><Crown size={10} />主语音</span>}
+                                </div>
                                 <span className="menu-desc truncate">{config.defaultVoice || config.model || config.provider || "未设置音色"}</span>
                             </div>
                             <div className="flex gap-2 shrink-0 items-center justify-end">
+                                {mainVoiceConfigId !== config.id && (
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            setMainVoiceConfig(config.id);
+                                        }}
+                                        className="ui-link-btn"
+                                        aria-label={`将 ${config.name || config.provider} 设为主语音 API`}
+                                        title="设为主语音 API"
+                                    >
+                                        <Crown size={18} />
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     onClick={(event) => {
