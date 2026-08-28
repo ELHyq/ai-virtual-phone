@@ -11,6 +11,7 @@ import {
 } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { simpleLLMCall } from "./api-helpers";
+import { isMemoryActive } from "./memory-service";
 
 const coreBuildingSet = new Set<string>();
 
@@ -40,7 +41,8 @@ export async function runCoreMemoryPipeline(
     options?: { force?: boolean },
 ): Promise<{ success: boolean; error?: string; rebuiltCount?: number }> {
     const config = loadMemoryConfig();
-    const allLongTermEntries = await loadMemoryEntriesByType(characterId, "long_term");
+    const allLongTermEntries = (await loadMemoryEntriesByType(characterId, "long_term"))
+        .filter(isMemoryActive);
 
     if (allLongTermEntries.length === 0) {
         return { success: false, error: "没有可用于总结核心记忆的长期记忆" };
@@ -125,6 +127,8 @@ export async function runCoreMemoryPipeline(
         createdAt: now,
         updatedAt: now,
         metadata: {
+            status: "active",
+            kind: "core_summary",
             summarizedLongTermEntries: entries.length,
             timeSpan: `${earliest} ~ ${latest}`,
             sourceSessionIds,

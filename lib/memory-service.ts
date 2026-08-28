@@ -3,16 +3,15 @@
 
 import type { MemoryConfig, MemoryEntry } from "./memory-types";
 import { loadMemoryEntriesByType } from "./memory-storage";
-import { resolveAuxiliaryApiConfig } from "./settings-storage";
-import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity } from "./memory-embedding";
+import { loadBindingConfig, resolveAuxiliaryApiConfig } from "./settings-storage";
+import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity, keywordSearch } from "./memory-embedding";
 import { estimateTokens } from "./token-counter";
+import { rerankMemoryEntries } from "./memory-rerank";
 
 /**
  * Retrieve relevant long-term memories for prompt injection.
- * Strategy:
- *   1. Total tokens <= longTermTokenBudget → return all
- *   2. Over budget + embedding API configured → vector-rank, fill until budget
- *   3. Over budget + no embedding → time-sorted (newest first), fill until budget
+ * Strategy: always rank active memories, then cap by both top-K and token budget.
+ * Keyword, vector, entity/tag, recency and importance signals are fused with RRF.
  * Embedding API is resolved from auxiliary binding (global, not per-character).
  */
 export async function retrieveMemoriesForPrompt(
@@ -20,23 +19,20 @@ export async function retrieveMemoriesForPrompt(
     currentContext: string,
     config: MemoryConfig
 ): Promise<MemoryEntry[]> {
-    const longTermEntries = await loadMemoryEntriesByType(characterId, "long_term");
+    const longTermEntries = (await loadMemoryEntriesByType(characterId, "long_term"))
+        .filter(isMemoryActive);
     if (longTermEntries.length === 0 || !currentContext.trim()) return [];
 
-    const budget = config.longTermTokenBudget;
+    const topK = Math.min(30, Math.max(1, config.recallTopK || 10));
+    const rankedLists: Array<{ entries: MemoryEntry[]; weight: number }> = [];
 
-    // Calculate total tokens for all entries
-    let totalTokens = 0;
-    for (const entry of longTermEntries) {
-        totalTokens += estimateTokens(entry.content) + 4;
-    }
+    const keywordRank = keywordSearch(currentContext, longTermEntries, longTermEntries.length)
+        .map(result => result.entry);
+    if (keywordRank.length > 0) rankedLists.push({ entries: keywordRank, weight: 1 });
 
-    // Strategy 1: all fit within budget → return all
-    if (totalTokens <= budget) {
-        return longTermEntries;
-    }
+    const entityRank = rankByMetadataMatch(currentContext, longTermEntries);
+    if (entityRank.length > 0) rankedLists.push({ entries: entityRank, weight: 0.8 });
 
-    // Strategy 2: vector recall enabled + embedding API configured → vector search, fill by relevance
     const embeddingApiConfig = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
     if (embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)) {
         const queryEmbedding = await generateEmbedding(currentContext, embeddingApiConfig);
@@ -48,23 +44,40 @@ export async function retrieveMemoriesForPrompt(
                     score: cosineSimilarity(queryEmbedding, entry.embedding!),
                 }));
                 scored.sort((a, b) => b.score - a.score);
-                return fillByBudget(scored.map(s => s.entry), budget);
+                rankedLists.push({ entries: scored.map(s => s.entry), weight: 1 });
             }
         }
     }
 
-    // Strategy 3: no embedding support → newest first, fill by budget
-    const sorted = [...longTermEntries].sort(
+    const recentRank = [...longTermEntries].sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
-    return fillByBudget(sorted, budget);
+    rankedLists.push({ entries: recentRank, weight: 0.2 });
+
+    const fused = fuseRankings(rankedLists, longTermEntries);
+    let ranked = fused;
+    const rerankBindingId = loadBindingConfig().rerankApiConfigId;
+    const rerankApiConfig = config.rerankEnabled !== false && rerankBindingId
+        ? resolveAuxiliaryApiConfig("rerankApiConfigId")
+        : null;
+    if (rerankApiConfig) {
+        const candidatePoolSize = Math.min(fused.length, Math.max(topK * 4, 20));
+        const reranked = await rerankMemoryEntries(
+            currentContext,
+            fused.slice(0, candidatePoolSize),
+            rerankApiConfig,
+        );
+        if (reranked) ranked = reranked;
+    }
+    return fillByBudget(ranked.slice(0, topK), config.longTermTokenBudget);
 }
 
 export async function retrieveCoreMemoriesForPrompt(
     characterId: string,
     config: MemoryConfig,
 ): Promise<MemoryEntry[]> {
-    const coreEntries = await loadMemoryEntriesByType(characterId, "core");
+    const coreEntries = (await loadMemoryEntriesByType(characterId, "core"))
+        .filter(isMemoryActive);
     if (coreEntries.length === 0) return [];
 
     const sorted = [...coreEntries].sort((a, b) => {
@@ -77,6 +90,51 @@ export async function retrieveCoreMemoriesForPrompt(
     });
 
     return fillByBudget(sorted, config.coreMemoryTokenBudget);
+}
+
+export function isMemoryActive(entry: MemoryEntry): boolean {
+    const status = String(entry.metadata?.status ?? "active");
+    return entry.metadata?.active !== false && status !== "archived" && status !== "superseded";
+}
+
+function metadataTerms(entry: MemoryEntry): string[] {
+    const tags = Array.isArray(entry.metadata?.tags) ? entry.metadata.tags.map(String) : [];
+    const entities = Array.isArray(entry.metadata?.entities) ? entry.metadata.entities.map(String) : [];
+    return [...tags, ...entities].map(value => value.trim().toLowerCase()).filter(Boolean);
+}
+
+function rankByMetadataMatch(query: string, entries: MemoryEntry[]): MemoryEntry[] {
+    const normalized = query.toLowerCase();
+    return entries
+        .map(entry => ({
+            entry,
+            score: metadataTerms(entry).reduce((score, term) => score + (normalized.includes(term) ? 1 : 0), 0),
+        }))
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.entry);
+}
+
+function fuseRankings(
+    lists: Array<{ entries: MemoryEntry[]; weight: number }>,
+    allEntries: MemoryEntry[],
+): MemoryEntry[] {
+    const scores = new Map<string, number>();
+    const byId = new Map(allEntries.map(entry => [entry.id, entry]));
+    const RRF_K = 60;
+    for (const list of lists) {
+        list.entries.forEach((entry, index) => {
+            scores.set(entry.id, (scores.get(entry.id) ?? 0) + list.weight / (RRF_K + index + 1));
+        });
+    }
+    for (const entry of allEntries) {
+        const importance = Number.isFinite(entry.importance) ? Math.max(0, Math.min(1, entry.importance)) : 0.5;
+        scores.set(entry.id, (scores.get(entry.id) ?? 0) + importance * 0.003);
+    }
+    return [...scores.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([id]) => byId.get(id))
+        .filter((entry): entry is MemoryEntry => Boolean(entry));
 }
 
 /** Pick entries in order until token budget is exhausted. */

@@ -17,12 +17,78 @@ import {
 } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { loadNativeTimeline, formatTimelineForSummarization, filterTimelineByAllowedSources } from "./short-term-assembler";
-import { generateEmbedding, resolveEmbeddingModel } from "./memory-embedding";
+import { generateEmbedding, generateEmbeddings, resolveEmbeddingModel, cosineSimilarity, keywordOverlapRatio } from "./memory-embedding";
 import { simpleLLMCall } from "./api-helpers";
 import { maybeRunCoreMemoryPipeline } from "./core-memory-builder";
+import { jsonrepair } from "jsonrepair";
 
 /** Per-character lock to prevent concurrent summarization. */
 const summarizingSet = new Set<string>();
+
+type ExtractedFact = {
+    content: string;
+    importance: number;
+    tags: string[];
+    entities: string[];
+};
+
+type MemoryExtraction = {
+    summary: string;
+    facts: ExtractedFact[];
+};
+
+const STRUCTURED_OUTPUT_SUFFIX = `
+
+输出必须是一个完整 JSON 对象，不要使用 Markdown 代码块：
+{"summary":"本批事件的简洁总结","facts":[{"content":"可独立成立的单一事实","importance":0.8,"tags":["关键词"],"entities":["人物或事物"]}]}
+facts 最多 8 条；没有值得长期保留的事实时返回空数组。`;
+
+function stringList(value: unknown, max: number): string[] {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(value.map(String).map(item => item.trim()).filter(Boolean))).slice(0, max);
+}
+
+function parseMemoryExtraction(raw: string): MemoryExtraction {
+    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    try {
+        const parsed = JSON.parse(jsonrepair(cleaned)) as Record<string, unknown>;
+        const summary = String(parsed.summary ?? "").trim();
+        const facts = (Array.isArray(parsed.facts) ? parsed.facts : [])
+            .map(item => {
+                const fact = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+                const content = String(fact.content ?? "").trim();
+                const rawImportance = Number(fact.importance);
+                return {
+                    content,
+                    importance: Number.isFinite(rawImportance) ? Math.max(0.1, Math.min(1, rawImportance)) : 0.75,
+                    tags: stringList(fact.tags, 5),
+                    entities: stringList(fact.entities, 5),
+                };
+            })
+            .filter(fact => fact.content.length >= 4)
+            .slice(0, 8);
+        if (summary || facts.length > 0) return { summary, facts };
+    } catch {
+        // Older/custom prompts may still return plain text. Keep them compatible.
+    }
+    return { summary: raw.trim(), facts: [] };
+}
+
+function isDuplicateMemory(
+    content: string,
+    embedding: number[] | undefined,
+    existing: MemoryEntry[],
+    kind: "session_summary" | "atomic_fact",
+): boolean {
+    const normalized = content.replace(/\s+/g, "").toLowerCase();
+    return existing.some(entry => {
+        if (entry.content.replace(/\s+/g, "").toLowerCase() === normalized) return true;
+        const existingKind = String(entry.metadata?.kind ?? "session_summary");
+        if (existingKind !== kind) return false;
+        if (keywordOverlapRatio(entry.content, content) >= 0.9) return true;
+        return Boolean(embedding && entry.embedding && cosineSimilarity(embedding, entry.embedding) >= 0.94);
+    });
+}
 
 /**
  * Check if summarization should run based on event counter, then execute.
@@ -62,7 +128,7 @@ export async function runSummarizationPipeline(
         /** 手动指定总结起点（覆盖进度水位线）；force 为真时忽略 */
         sinceTimestamp?: string;
     }
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; stored?: number; skipped?: number }> {
     const config = loadMemoryConfig();
 
     // Resolve API from auxiliary binding
@@ -99,7 +165,8 @@ export async function runSummarizationPipeline(
         .replace(/\{\{char\}\}/gi, characterName)
         .replace(/\{\{earliest\}\}/gi, earliest)
         .replace(/\{\{latest\}\}/gi, latest)
-        .replace(/\{\{events\}\}/gi, eventsText);
+        .replace(/\{\{events\}\}/gi, eventsText)
+        + (/"facts"/i.test(promptTemplate) ? "" : STRUCTURED_OUTPUT_SUFFIX);
 
     // Call LLM for summarization — compatible with all providers
     const result = await simpleLLMCall(
@@ -117,15 +184,34 @@ export async function runSummarizationPipeline(
         return { success: false, error: "记忆总结结果疑似被截断，已取消入库，请稍后重试或提高模型输出上限" };
     }
 
-    const summary = result.content;
+    const extraction = parseMemoryExtraction(result.content);
+    const candidates = [
+        ...(extraction.summary ? [{
+            content: extraction.summary,
+            importance: 0.72,
+            tags: [] as string[],
+            entities: [] as string[],
+            kind: "session_summary" as const,
+        }] : []),
+        ...extraction.facts.map(fact => ({ ...fact, kind: "atomic_fact" as const })),
+    ];
+    if (candidates.length === 0) {
+        return { success: false, error: "记忆总结结果为空" };
+    }
 
-    // Generate embedding for the summary (only if vector recall is enabled)
-    let embedding: number[] | undefined;
+    // Generate candidate embeddings in one batch when configured.
+    let candidateEmbeddings: Array<number[] | undefined> = candidates.map(() => undefined);
     const embeddingApiConfig = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
     if (embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)) {
         try {
-            const emb = await generateEmbedding(summary, embeddingApiConfig);
-            if (emb) embedding = emb;
+            const embeddings = await generateEmbeddings(candidates.map(candidate => candidate.content), embeddingApiConfig);
+            if (embeddings) {
+                candidateEmbeddings = embeddings;
+            } else {
+                candidateEmbeddings = await Promise.all(candidates.map(async candidate =>
+                    await generateEmbedding(candidate.content, embeddingApiConfig) ?? undefined
+                ));
+            }
         } catch { /* ignore */ }
     }
 
@@ -145,40 +231,65 @@ export async function runSummarizationPipeline(
             .filter((sessionId): sessionId is string => Boolean(sessionId)),
     ));
 
-    // Save as long-term memory
+    // Save summary + atomic facts with source traceability and duplicate protection.
     const now = new Date().toISOString();
-    const longTermEntry: MemoryEntry = {
-        id: `mem_lt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        characterId,
-        sourceApp: dominantSource as MemoryEntry["sourceApp"],
-        type: "long_term",
-        content: summary,
-        embedding,
-        importance: 0.8,
-        createdAt: now,
-        updatedAt: now,
-        metadata: {
-            summarizedEvents: allEntries.length,
-            timeSpan: `${earliest} ~ ${latest}`,
-            sourceSessionIds,
-        },
-    };
-    await saveMemoryEntry(longTermEntry);
+    const existing = await loadMemoryEntries(characterId);
+    let stored = 0;
+    let skipped = 0;
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const embedding = candidateEmbeddings[index];
+        if (isDuplicateMemory(candidate.content, embedding, existing, candidate.kind)) {
+            skipped += 1;
+            continue;
+        }
+        const longTermEntry: MemoryEntry = {
+            id: `mem_lt_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+            characterId,
+            sourceApp: dominantSource as MemoryEntry["sourceApp"],
+            type: "long_term",
+            content: candidate.content,
+            embedding,
+            importance: candidate.importance,
+            createdAt: now,
+            updatedAt: now,
+            sourceMessageIds: allEntries.map(entry => entry.id),
+            metadata: {
+                kind: candidate.kind,
+                status: "active",
+                tags: candidate.tags,
+                entities: candidate.entities,
+                summarizedEvents: allEntries.length,
+                timeSpan: `${earliest} ~ ${latest}`,
+                sourceSessionIds,
+                sourceEventIds: allEntries.map(entry => entry.id),
+            },
+        };
+        await saveMemoryEntry(longTermEntry);
+        existing.push(longTermEntry);
+        stored += 1;
+    }
+
+    if (stored === 0 && skipped === 0) {
+        return { success: false, error: "没有提取到可保存的长期记忆" };
+    }
 
     // Update last summarized timestamp + reset counter
     setLastSummarizedTimestamp(characterId, latest);
     resetEventCounter(characterId);
 
     // Enforce long-term limit
-    const allLongTerm = await loadMemoryEntries(characterId);
+    const allLongTerm = (await loadMemoryEntries(characterId)).filter(entry => entry.type === "long_term");
     if (allLongTerm.length > config.maxLongTermEntries) {
         const excess = allLongTerm.slice(0, allLongTerm.length - config.maxLongTermEntries);
         await deleteMemoryEntries(excess.map(e => e.id));
     }
 
-    incrementCoreMemoryCounter(characterId);
-    await maybeRunCoreMemoryPipeline(characterId, characterName);
+    if (stored > 0) {
+        incrementCoreMemoryCounter(characterId);
+        await maybeRunCoreMemoryPipeline(characterId, characterName);
+    }
 
-    console.log(`[MemorySummarizer] Summarized ${allEntries.length} entries → 1 long-term memory`);
-    return { success: true };
+    console.log(`[MemorySummarizer] Summarized ${allEntries.length} entries → ${stored} stored, ${skipped} skipped`);
+    return { success: true, stored, skipped };
 }

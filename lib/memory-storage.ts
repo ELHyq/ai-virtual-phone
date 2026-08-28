@@ -180,7 +180,21 @@ export function loadMemoryConfig(): MemoryConfig {
     try {
         const raw = kvGet(CONFIG_KEY);
         if (!raw) return { ...DEFAULT_MEMORY_CONFIG };
-        return { ...DEFAULT_MEMORY_CONFIG, ...JSON.parse(raw) };
+        const parsed = JSON.parse(raw) as Partial<MemoryConfig>;
+        const merged = { ...DEFAULT_MEMORY_CONFIG, ...parsed };
+        // Migrate the former effectively-unbounded defaults without overriding
+        // users who already customized any budget or the new recall cap.
+        if (
+            parsed.recallTopK == null
+            && parsed.shortTermTokenBudget === 100000
+            && parsed.coreMemoryTokenBudget === 100000
+            && parsed.longTermTokenBudget === 100000
+        ) {
+            merged.shortTermTokenBudget = DEFAULT_MEMORY_CONFIG.shortTermTokenBudget;
+            merged.coreMemoryTokenBudget = DEFAULT_MEMORY_CONFIG.coreMemoryTokenBudget;
+            merged.longTermTokenBudget = DEFAULT_MEMORY_CONFIG.longTermTokenBudget;
+        }
+        return merged;
     } catch {
         return { ...DEFAULT_MEMORY_CONFIG };
     }

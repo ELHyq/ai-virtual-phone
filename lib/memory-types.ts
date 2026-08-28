@@ -20,6 +20,8 @@ export type MemoryConfig = {
     autoSummarizeEnabled: boolean;          // whether auto-summarization runs after N events
     autoBuildCoreEnabled: boolean;          // whether core memories rebuild after long-term summarization
     vectorRecallEnabled: boolean;           // whether vector embedding recall is used for memory retrieval
+    rerankEnabled: boolean;                 // whether a configured rerank API refines fused retrieval candidates
+    recallTopK: number;                     // maximum long-term memories injected per request
     maxLongTermEntries: number;
     summarizationEventInterval: number;     // trigger summarization every N events
     coreSummarizationInterval: number;      // trigger core-memory rebuild every N new long-term memories
@@ -55,7 +57,7 @@ export type MemorySearchResult = {
  * Default summarization prompt template.
  * Placeholders: {{char}}, {{earliest}}, {{latest}}, {{events}}
  */
-export const DEFAULT_SUMMARIZATION_PROMPT = `你是一个记忆整理助手。根据以下事件记录，创建一段简洁的事实性总结。
+export const DEFAULT_SUMMARIZATION_PROMPT = `你是一个记忆整理助手。根据以下事件记录，创建一段简洁的事实性总结，并提取可独立检索的原子事实。
 
 角色：{{char}}
 时间跨度：{{earliest}} 至 {{latest}}
@@ -63,15 +65,21 @@ export const DEFAULT_SUMMARIZATION_PROMPT = `你是一个记忆整理助手。�
 事件记录：
 {{events}}
 
-要求：
+总结要求：
 - 用第三人称描述{{char}}和用户之间的互动
 - 保留关键事实：提到的名字、做出的承诺、情感变化、关系里程碑
 - 保留用户分享的具体信息（生日、偏好、习惯）
 - 保留朋友圈等非聊天事件中的关键信息
 - 100-200字
-- 不要包含格式标记
 
-总结：`;
+原子事实要求：
+- 每条只表达一个可以独立成立的事实，不要把多个事件揉成一条
+- 优先提取身份、关系变化、承诺、偏好、重要人物、长期计划和关键经历
+- 不确定、推测、普通寒暄不要写入
+- 最多 8 条
+
+只输出 JSON，不要使用 Markdown：
+{"summary":"100-200字总结","facts":[{"content":"原子事实","importance":0.8,"tags":["关键词"],"entities":["人物或事物"]}]}`;
 
 /**
  * Default core-memory summarization prompt template.
@@ -92,6 +100,8 @@ export const DEFAULT_CORE_MEMORY_PROMPT = `你是一个核心记忆整理助手�
 - 恋爱周年、结婚纪念日、在一起多久
 - 明确的长期关系身份（如恋人、前任、配偶）
 - 共同生活的重要里程碑（如同居、见家长、共同养宠物）
+
+不要包含：
 - 普通日常聊天
 - 一般情绪波动
 - 暂时性的矛盾或暧昧
@@ -107,12 +117,14 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     autoSummarizeEnabled: true,
     autoBuildCoreEnabled: true,
     vectorRecallEnabled: true,
+    rerankEnabled: true,
+    recallTopK: 10,
     maxLongTermEntries: 500,
     summarizationEventInterval: 80,
     coreSummarizationInterval: 5,
-    shortTermTokenBudget: 100000,
-    coreMemoryTokenBudget: 100000,
-    longTermTokenBudget: 100000,
+    shortTermTokenBudget: 16000,
+    coreMemoryTokenBudget: 2400,
+    longTermTokenBudget: 4000,
     summarizationPrompt: DEFAULT_SUMMARIZATION_PROMPT,
     coreMemoryPrompt: DEFAULT_CORE_MEMORY_PROMPT,
     vnSummaryPrompt: "",

@@ -4829,6 +4829,10 @@
   transform: none;
 }
 
+.memory-report-card.is-inactive {
+  opacity: 0.58;
+}
+
 .mem-entry-menu-backdrop {
   position: fixed;
   inset: 0;
@@ -4942,6 +4946,22 @@
 .mem-origin-badge.is-manual {
   background: color-mix(in srgb, #5B4DDB 14%, transparent);
   color: #5B4DDB;
+}
+
+.mem-entry-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.mem-entry-tags span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-icon-active) 10%, transparent);
+  color: var(--c-text);
+  font-size: calc(9px*var(--app-text-scale,1));
+  line-height: 1.2;
 }
 
 .mem-entry-menu-wrap {

@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
 import { Toggle } from "@/components/ui/form";
@@ -27,6 +27,7 @@ import { runSummarizationPipeline } from "@/lib/memory-summarizer";
 import { runCoreMemoryPipeline } from "@/lib/core-memory-builder";
 import { resolveAuxiliaryApiConfig, resolveUserIdentity } from "@/lib/settings-storage";
 import { generateEmbedding, resolveEmbeddingModel } from "@/lib/memory-embedding";
+import { isMemoryActive, retrieveMemoriesForPrompt } from "@/lib/memory-service";
 import { BINDING_ACCENTS } from "@/lib/ui-accent-colors";
 
 type MemoryView = "list" | "detail" | "settings";
@@ -41,8 +42,8 @@ const MEMORY_TOKEN_BUDGET_MIN: Record<MemoryBudgetKey, number> = {
 };
 const MEMORY_TOKEN_BUDGET_STEP: Record<MemoryBudgetKey, number> = {
     shortTermTokenBudget: 5000,
-    coreMemoryTokenBudget: 1000,
-    longTermTokenBudget: 1000,
+    coreMemoryTokenBudget: 100,
+    longTermTokenBudget: 200,
 };
 const MANUAL_MEMORY_CONTENT_LIMIT = 3000;
 // 详情页时间线最多解析渲染的条数：全量历史可能有几万条，
@@ -205,6 +206,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [savingMemory, setSavingMemory] = useState(false);
     const [summarizeRangeOpen, setSummarizeRangeOpen] = useState(false);
     const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+    const [recallQuery, setRecallQuery] = useState("");
+    const [recallResults, setRecallResults] = useState<MemoryEntry[] | null>(null);
+    const [recallLoading, setRecallLoading] = useState(false);
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -302,6 +306,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         if (view === "detail" && selectedCharId) {
             setActiveTab("short");
             setExpandedId(null);
+            setRecallQuery("");
+            setRecallResults(null);
             loadDetailData(selectedCharId);
         }
     }, [view, selectedCharId, loadDetailData]);
@@ -364,7 +370,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 range === "all" ? { force: true } : sinceTimestamp ? { sinceTimestamp } : undefined,
             );
             if (result.success) {
-                showNotice("总结完成");
+                const detail = typeof result.stored === "number"
+                    ? `：新增 ${result.stored} 条${result.skipped ? `，去重 ${result.skipped} 条` : ""}`
+                    : "";
+                showNotice(`总结完成${detail}`);
                 loadDetailData(selectedCharId);
                 loadCharacterList();
             } else {
@@ -433,6 +442,27 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         saveMemoryConfig(next);
     };
 
+    const saveRecallTopK = (value: number) => {
+        if (!Number.isFinite(value)) return;
+        const next = { ...config, recallTopK: Math.min(30, Math.max(1, Math.round(value))) };
+        setConfig(next);
+        saveMemoryConfig(next);
+    };
+
+    const handleRecallPreview = async () => {
+        if (!selectedCharId || !recallQuery.trim() || recallLoading) return;
+        setRecallLoading(true);
+        try {
+            const results = await retrieveMemoriesForPrompt(selectedCharId, recallQuery.trim(), config);
+            setRecallResults(results);
+        } catch (error) {
+            console.error("[MemoryBank] Recall preview failed:", error);
+            showNotice("召回预览失败: " + String(error));
+        } finally {
+            setRecallLoading(false);
+        }
+    };
+
     // ── Prompt editing ──
     const handleSavePrompt = () => {
         if (editingPrompt === null) return;
@@ -473,6 +503,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const isManualMemoryEntry = (entry: MemoryEntry) => {
         const origin = String(entry.metadata?.origin ?? "");
         return origin === "user_manual" || origin === "user_edited" || entry.id.includes("_manual_");
+    };
+
+    const memoryKindLabel = (entry: MemoryEntry) => {
+        if (!isMemoryActive(entry)) return "OFF";
+        if (isManualMemoryEntry(entry)) return "MANUAL";
+        const kind = String(entry.metadata?.kind ?? "auto");
+        if (kind === "atomic_fact") return "FACT";
+        if (kind === "session_summary") return "SUMMARY";
+        if (kind === "core_summary") return "CORE";
+        return "AUTO";
     };
 
     const maybeBuildManualMemoryEmbedding = async (type: MemoryEntry["type"], content: string): Promise<number[] | undefined> => {
@@ -541,6 +581,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     updatedAt: now,
                     metadata: {
                         origin: "user_manual",
+                        status: "active",
                     },
                 };
 
@@ -561,6 +602,69 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             setSavingMemory(false);
         }
     };
+
+    const handleToggleMemoryActive = async (entry: MemoryEntry) => {
+        const nextActive = !isMemoryActive(entry);
+        const updated: MemoryEntry = {
+            ...entry,
+            updatedAt: new Date().toISOString(),
+            metadata: {
+                ...(entry.metadata ?? {}),
+                active: nextActive,
+                status: nextActive ? "active" : "archived",
+                statusChangedByUser: true,
+            },
+        };
+        await saveMemoryEntry(updated);
+        const setter = entry.type === "core" ? setCoreEntries : setLongTermEntries;
+        setter(prev => prev.map(item => item.id === entry.id ? updated : item));
+        setEntryMenuId(null);
+        showNotice(nextActive ? "已恢复参与召回" : "已停用，不再参与召回");
+    };
+
+    const renderRecallPreview = () => (
+        <div className="g-card p-3 mb-1">
+            <div className="flex items-center gap-2 mb-2">
+                <Search size={15} />
+                <span className="ts-12 font-semibold">召回预览</span>
+                <span className="ts-11 text-secondary ml-auto">最多 {config.recallTopK || 10} 条</span>
+            </div>
+            <div className="flex gap-2">
+                <input
+                    className="ui-input flex-1 min-w-0"
+                    value={recallQuery}
+                    onChange={event => setRecallQuery(event.target.value)}
+                    onKeyDown={event => { if (event.key === "Enter") void handleRecallPreview(); }}
+                    placeholder="输入一句话，查看模型会想起什么"
+                />
+                <button
+                    className="ui-btn ui-btn-primary px-3"
+                    disabled={!recallQuery.trim() || recallLoading}
+                    onClick={() => void handleRecallPreview()}
+                >
+                    {recallLoading ? "检索中" : "测试"}
+                </button>
+            </div>
+            {recallResults && (
+                <div className="mt-3 flex flex-col gap-2">
+                    {recallResults.length === 0 ? (
+                        <p className="ts-11 text-secondary">没有召回到相关记忆。</p>
+                    ) : recallResults.map((entry, index) => (
+                        <button
+                            type="button"
+                            key={entry.id}
+                            className="text-left rounded-xl p-2.5"
+                            style={{ background: "var(--phone-card-bg, rgba(255,255,255,.6))" }}
+                            onClick={() => setExpandedId(entry.id)}
+                        >
+                            <span className="ts-10 text-secondary">#{index + 1} · {String(entry.metadata?.kind ?? "memory")}</span>
+                            <p className="ts-12 leading-relaxed mt-1">{entry.content}</p>
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
 
     const renderMemoryEntries = (type: MemoryEntry["type"], entries: MemoryEntry[], emptyText: string) => {
         const label = type === "core" ? "核心记忆" : "长期记忆";
@@ -603,7 +707,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     entries.map(entry => (
                         <div
                             key={entry.id}
-                            className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}`}
+                            className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}${isMemoryActive(entry) ? "" : " is-inactive"}`}
                             onClick={() => {
                                 if (entryMenuId) {
                                     setEntryMenuId(null);
@@ -616,7 +720,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>[ DATE: {relativeTime(entry.createdAt)} ]</span>
                                 <div className="mem-report-actions">
                                     <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
-                                        {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
+                                        {memoryKindLabel(entry)}
                                     </span>
                                     <div className="mem-entry-menu-wrap">
                                         <button
@@ -634,6 +738,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                                 <button onClick={() => openEditMemoryEditor(entry)}>
                                                     <Edit3 size={13} />
                                                     <span>编辑</span>
+                                                </button>
+                                                <button onClick={() => void handleToggleMemoryActive(entry)}>
+                                                    <Archive size={13} />
+                                                    <span>{isMemoryActive(entry) ? "停用召回" : "恢复召回"}</span>
                                                 </button>
                                                 <button
                                                     className="is-danger"
@@ -658,6 +766,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                         : entry.content
                                 }
                             </div>
+                            {expandedId === entry.id && (
+                                <div className="mem-entry-tags">
+                                    {Array.from(new Set([
+                                        ...(Array.isArray(entry.metadata?.entities) ? entry.metadata.entities : []),
+                                        ...(Array.isArray(entry.metadata?.tags) ? entry.metadata.tags : []),
+                                    ].map(String).filter(Boolean))).slice(0, 8).map(tag => (
+                                        <span key={tag}>{tag}</span>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     ))
                 )}
@@ -701,7 +819,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         renderMemoryEntries("core", coreEntries, "暂无核心记忆。长期记忆累计到设定条数后会自动提炼，也可以手动新增。")
                     ) : (
                         /* ── Long-term: Summarized Memories ── */
-                        renderMemoryEntries("long_term", longTermEntries, "暂无长期记忆。点击设置页的手动总结，或直接新增一条记忆。")
+                        <>
+                            {renderRecallPreview()}
+                            {renderMemoryEntries("long_term", longTermEntries, "暂无长期记忆。点击设置页的手动总结，或直接新增一条记忆。")}
+                        </>
                     )}
                     </MemoryDetailBoundary>
                 </div>
@@ -990,8 +1111,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     <div className="menu-item">
                         <MemorySettingsIcon icon={Search} color={BINDING_ACCENTS.embedding} />
                         <div className="menu-label-group">
-                            <span className="menu-label">向量召回</span>
-                            <span className="menu-desc">长期记忆超出预算时，通过 embedding 按相关性检索</span>
+                            <span className="menu-label">混合召回</span>
+                            <span className="menu-desc">每轮融合关键词、标签、时近性、重要性与 embedding</span>
                         </div>
                         <div className="menu-right">
                             <Toggle checked={config.vectorRecallEnabled ?? true} onChange={(v) => {
@@ -1001,6 +1122,35 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             }} />
                         </div>
                     </div>
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={SlidersHorizontal} color={BINDING_ACCENTS.embedding} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">Rerank 精排</span>
+                            <span className="menu-desc">使用辅助 API 精排候选记忆；未绑定或失败时保留混合召回顺序</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle checked={config.rerankEnabled ?? true} onChange={(v) => {
+                                const next = { ...config, rerankEnabled: v };
+                                setConfig(next);
+                                saveMemoryConfig(next);
+                            }} />
+                        </div>
+                    </div>
+                </div>
+
+                <p className="menu-group-desc mx-2">召回数量</p>
+                <div className="menu-group">
+                    <MemorySettingsSliderItem
+                        icon={Search}
+                        color={BINDING_ACCENTS.embedding}
+                        label="每轮最多召回"
+                        desc="相关长期记忆的最大条数；仍会同时受 token 预算限制"
+                        value={config.recallTopK || 10}
+                        min={1}
+                        max={30}
+                        step={1}
+                        onChange={saveRecallTopK}
+                    />
                 </div>
 
                 {/* Token budget sliders */}

@@ -40,12 +40,32 @@ export async function generateEmbedding(
     apiConfig: ApiConfig,
     options: { throwOnError?: boolean } = {}
 ): Promise<number[] | null> {
+    const embeddings = await requestEmbeddings(text, 1, apiConfig, options);
+    return embeddings?.[0] ?? null;
+}
+
+/** Generate multiple embeddings in one request. The returned array preserves input order. */
+export async function generateEmbeddings(
+    texts: string[],
+    apiConfig: ApiConfig,
+    options: { throwOnError?: boolean } = {}
+): Promise<number[][] | null> {
+    return requestEmbeddings(texts, texts.length, apiConfig, options);
+}
+
+async function requestEmbeddings(
+    input: string | string[],
+    expectedCount: number,
+    apiConfig: ApiConfig,
+    options: { throwOnError?: boolean },
+): Promise<number[][] | null> {
     const fail = (message: string): null => {
         if (options.throwOnError) throw new Error(message);
         console.warn("[MemoryEmbedding]", message);
         return null;
     };
 
+    if (expectedCount === 0) return [];
     const embeddingModel = resolveEmbeddingModel(apiConfig);
     if (!embeddingModel) return fail("该配置无可用向量模型（默认模型名不像向量模型，服务商也无内置映射）");
     if (!apiConfig.apiKey) return fail("缺少 API Key");
@@ -65,18 +85,23 @@ export async function generateEmbedding(
             headers,
             body: JSON.stringify({
                 model: embeddingModel,
-                input: text,
+                input,
             }),
         });
         if (!res.ok) {
             return fail(`API 错误 ${res.status}: ${await res.text()}`);
         }
         const data = await res.json();
-        const embedding = data?.data?.[0]?.embedding;
-        if (!Array.isArray(embedding) || embedding.length === 0) {
+        const rows = Array.isArray(data?.data) ? data.data : [];
+        const embeddings = rows
+            .slice()
+            .sort((a: { index?: number }, b: { index?: number }) => (a.index ?? 0) - (b.index ?? 0))
+            .map((row: { embedding?: unknown }) => row.embedding)
+            .filter((embedding: unknown): embedding is number[] => Array.isArray(embedding) && embedding.length > 0);
+        if (embeddings.length !== expectedCount) {
             return fail("接口未返回向量数据");
         }
-        return embedding;
+        return embeddings;
     } catch (err) {
         if (options.throwOnError) throw err;
         console.warn("[MemoryEmbedding] fetch error:", err);
